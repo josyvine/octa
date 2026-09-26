@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">octa</string>
+    <string name="tab_extract">Extract</string>
+    <string name="tab_downloads">Queue</string>
+    <string name="tab_settings">Engine</string>
+    <string name="url_input_label">Media Stream or Video URL</string>
+    <string name="url_input_placeholder">https://youtube.com/watch?v=… or direct MP4/DASH stream</string>
+    <string name="action_paste_clipboard">Paste from Clipboard</string>
+    <string name="action_clear_url">Clear URL</string>
+    <string name="action_fetch_streams">Extract Stream Manifest</string>
+    <string name="action_resolving_streams">Decoding Signatures &amp; Probing Streams…</string>
+    <string name="action_start_download">Launch Parallel Download</string>
+    <string name="action_clear_finished">Clear Finished Tasks</string>
+    <string name="action_select_saf_folder">Choose Storage Folder (SAF)</string>
+    <string name="action_clear_cache">Purge Temporary Chunk &amp; DASH Cache</string>
+    <string name="action_copy_logs">Copy to Clipboard</string>
+    <string name="action_minimize_logs">Minimize Console</string>
+    <string name="action_clear_logs">Clear Log Buffer</string>
+    <string name="notification_channel_name">OctaStream Parallel Transfer Engine</string>
+    <string name="notification_channel_desc">Displays real-time multi-segment download speed and progress</string>
+</resources>
