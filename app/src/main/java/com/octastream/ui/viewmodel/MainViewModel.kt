@@ -40,7 +40,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val downloadEngine = DownloadEngine.getInstance(appContext)
     private val preferenceManager = PreferenceManager.getInstance(appContext)
 
-    private val _selectedTab = MutableStateFlow(OctaTab.FETCH)
+    // Starts on the Landing Screen greeting the user on fresh app launch
+    private val _selectedTab = MutableStateFlow(OctaTab.LANDING)
     val selectedTab: StateFlow<OctaTab> = _selectedTab.asStateFlow()
 
     private val _urlInput = MutableStateFlow("")
