@@ -6,6 +6,7 @@ import com.octastream.model.DownloadSegment
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -18,7 +19,7 @@ import java.io.RandomAccessFile
 /**
  * Executes a single parallel byte-range worker thread against a pre-allocated target file
  * using RandomAccessFile("rw") and HTTP Range headers (with automatic `&range=` query parameter
- * fallback for YouTube googlevideo.com adaptive DASH streams).
+ * binding and client User-Agent matching for YouTube googlevideo.com adaptive DASH streams).
  */
 class SegmentWorker(
     private val httpClient: OkHttpClient,
@@ -27,6 +28,8 @@ class SegmentWorker(
     private val targetFile: File,
     private val initialSegment: DownloadSegment,
     private val useRangeHeader: Boolean,
+    private val userAgent: String? = null,
+    private val customHeaders: Map<String, String> = emptyMap(),
     private val onSegmentProgress: (segmentIndex: Int, downloadedBytes: Long, speedBps: Long, completed: Boolean) -> Unit
 ) {
 
@@ -48,131 +51,156 @@ class SegmentWorker(
             )
         }
 
-        val userAgent = MediaExtractor.resolveUserAgentForUrl(url)
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .header("User-Agent", userAgent)
-            .header("Accept", "*/*")
-            .header("Accept-Encoding", "identity")
+        val effectiveUa = userAgent ?: MediaExtractor.resolveUserAgentForUrl(url)
+        val isGoogleVideo = url.contains("googlevideo.com", ignoreCase = true)
 
-        if (useRangeHeader && endByte > 0L) {
-            val rangeHeader = "bytes=$resumeStartByte-$endByte"
-            requestBuilder.header("Range", rangeHeader)
-            AppLogger.network(
-                "SegWorker-${initialSegment.index}",
-                "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) requesting HTTP $rangeHeader"
-            )
+        // For Google Video CDN streams, bind &range=start-end directly to the URL query string
+        // so that concurrent non-zero offset workers are recognized as valid media playback requests.
+        val effectiveUrl = if (useRangeHeader && endByte > 0L && isGoogleVideo) {
+            val cleanUrl = url.replace(Regex("&range=[^&]*"), "")
+            if (cleanUrl.contains("?")) {
+                "$cleanUrl&range=$resumeStartByte-$endByte"
+            } else {
+                "$cleanUrl?range=$resumeStartByte-$endByte"
+            }
         } else {
-            AppLogger.network(
-                "SegWorker-${initialSegment.index}",
-                "Task[${taskId.take(6)}] Part #${initialSegment.index} starting single-stream GET (offset=0)"
-            )
+            url
         }
 
-        var activeCall = httpClient.newCall(requestBuilder.build())
-        try {
-            var response: Response = activeCall.execute()
+        val maxAttempts = 3
+        var attempt = 0
+        var lastException: Exception? = null
 
-            // If googlevideo.com adaptive stream requires `&range=start-end` query parameter instead of Range header
-            if (!response.isSuccessful && response.code != 206 &&
-                useRangeHeader && endByte > 0L && url.contains("googlevideo.com", ignoreCase = true)
-            ) {
-                response.close()
-                val rangeParamUrl = if (url.contains("?")) {
-                    "$url&range=$resumeStartByte-$endByte"
-                } else {
-                    "$url?range=$resumeStartByte-$endByte"
+        while (attempt < maxAttempts) {
+            attempt++
+            currentCoroutineContext().ensureActive()
+
+            val requestBuilder = Request.Builder()
+                .url(effectiveUrl)
+                .header("User-Agent", effectiveUa)
+                .header("Accept", "*/*")
+                .header("Accept-Encoding", "identity")
+
+            customHeaders.forEach { (k, v) ->
+                if (!k.equals("User-Agent", ignoreCase = true)) {
+                    requestBuilder.header(k, v)
                 }
-                val fallbackReq = Request.Builder()
-                    .url(rangeParamUrl)
-                    .header("User-Agent", userAgent)
-                    .header("Accept", "*/*")
-                    .header("Accept-Encoding", "identity")
-                    .build()
-                activeCall = httpClient.newCall(fallbackReq)
-                response = activeCall.execute()
             }
 
-            response.use { resp ->
-                if (!resp.isSuccessful && resp.code != 206) {
-                    throw IOException(
-                        "Part #${initialSegment.index} HTTP ${resp.code} (${resp.message})"
+            if (useRangeHeader && endByte > 0L) {
+                val rangeHeader = "bytes=$resumeStartByte-$endByte"
+                requestBuilder.header("Range", rangeHeader)
+                if (attempt == 1) {
+                    AppLogger.network(
+                        "SegWorker-${initialSegment.index}",
+                        "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) requesting HTTP $rangeHeader"
                     )
                 }
+            } else if (attempt == 1) {
+                AppLogger.network(
+                    "SegWorker-${initialSegment.index}",
+                    "Task[${taskId.take(6)}] Part #${initialSegment.index} starting single-stream GET (offset=0)"
+                )
+            }
 
-                val body = resp.body
-                    ?: throw IOException("Empty HTTP response body on Part #${initialSegment.index}")
+            val activeCall = httpClient.newCall(requestBuilder.build())
 
-                RandomAccessFile(targetFile, "rw").use { raf ->
-                    val serverHonoredRange = useRangeHeader && (resp.code == 206 || resp.request.url.toString().contains("range="))
-                    val seekOffset = if (serverHonoredRange) resumeStartByte else 0L
-                    raf.seek(seekOffset)
+            try {
+                val response: Response = activeCall.execute()
 
-                    val buffer = ByteArray(32 * 1024)
-                    var segmentAccumulated = if (serverHonoredRange) currentDownloaded else 0L
-                    var windowBytes = 0L
-                    var lastReportTimeMs = System.currentTimeMillis()
-                    val expectedTotal = initialSegment.totalBytes
-
-                    body.byteStream().use { inputStream ->
-                        while (true) {
-                            currentCoroutineContext().ensureActive()
-
-                            val maxToRead = if (serverHonoredRange && expectedTotal > 0L) {
-                                val remaining = expectedTotal - segmentAccumulated
-                                if (remaining <= 0L) break
-                                minOf(buffer.size.toLong(), remaining).toInt()
-                            } else {
-                                buffer.size
-                            }
-
-                            val read = inputStream.read(buffer, 0, maxToRead)
-                            if (read == -1) break
-
-                            raf.write(buffer, 0, read)
-                            segmentAccumulated += read
-                            windowBytes += read
-
-                            val now = System.currentTimeMillis()
-                            val elapsedMs = now - lastReportTimeMs
-                            if (elapsedMs >= 160L) {
-                                val speedBps = (windowBytes * 1000L) / elapsedMs.coerceAtLeast(1L)
-                                onSegmentProgress(
-                                    initialSegment.index,
-                                    segmentAccumulated,
-                                    speedBps,
-                                    false
-                                )
-                                windowBytes = 0L
-                                lastReportTimeMs = now
-                            }
-                        }
+                response.use { resp ->
+                    val isSuccess = resp.isSuccessful || resp.code == 206
+                    if (!isSuccess) {
+                        throw IOException("Part #${initialSegment.index} HTTP ${resp.code} (${resp.message})")
                     }
 
-                    onSegmentProgress(initialSegment.index, segmentAccumulated, 0L, true)
-                    AppLogger.info(
-                        "SegWorker-${initialSegment.index}",
-                        "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) completed (${segmentAccumulated} bytes written)."
-                    )
+                    val body = resp.body
+                        ?: throw IOException("Empty HTTP response body on Part #${initialSegment.index}")
 
-                    return@withContext initialSegment.copy(
-                        downloadedBytes = segmentAccumulated,
-                        isCompleted = true,
-                        activeSpeedBps = 0L
-                    )
+                    RandomAccessFile(targetFile, "rw").use { raf ->
+                        val serverHonoredRange = useRangeHeader && (
+                            resp.code == 206 ||
+                                effectiveUrl.contains("range=") ||
+                                resp.header("Content-Range") != null
+                            )
+                        val seekOffset = if (serverHonoredRange) resumeStartByte else 0L
+                        raf.seek(seekOffset)
+
+                        val buffer = ByteArray(32 * 1024)
+                        var segmentAccumulated = if (serverHonoredRange) currentDownloaded else 0L
+                        var windowBytes = 0L
+                        var lastReportTimeMs = System.currentTimeMillis()
+                        val expectedTotal = initialSegment.totalBytes
+
+                        body.byteStream().use { inputStream ->
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+
+                                val maxToRead = if (serverHonoredRange && expectedTotal > 0L) {
+                                    val remaining = expectedTotal - segmentAccumulated
+                                    if (remaining <= 0L) break
+                                    minOf(buffer.size.toLong(), remaining).toInt()
+                                } else {
+                                    buffer.size
+                                }
+
+                                val read = inputStream.read(buffer, 0, maxToRead)
+                                if (read == -1) break
+
+                                raf.write(buffer, 0, read)
+                                segmentAccumulated += read
+                                windowBytes += read
+
+                                val now = System.currentTimeMillis()
+                                val elapsedMs = now - lastReportTimeMs
+                                if (elapsedMs >= 160L) {
+                                    val speedBps = (windowBytes * 1000L) / elapsedMs.coerceAtLeast(1L)
+                                    onSegmentProgress(
+                                        initialSegment.index,
+                                        segmentAccumulated,
+                                        speedBps,
+                                        false
+                                    )
+                                    windowBytes = 0L
+                                    lastReportTimeMs = now
+                                }
+                            }
+                        }
+
+                        onSegmentProgress(initialSegment.index, segmentAccumulated, 0L, true)
+                        AppLogger.info(
+                            "SegWorker-${initialSegment.index}",
+                            "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) completed (${segmentAccumulated} bytes written)."
+                        )
+
+                        return@withContext initialSegment.copy(
+                            downloadedBytes = segmentAccumulated,
+                            isCompleted = true,
+                            activeSpeedBps = 0L
+                        )
+                    }
+                }
+            } catch (ce: CancellationException) {
+                activeCall.cancel()
+                throw ce
+            } catch (e: Exception) {
+                activeCall.cancel()
+                lastException = e
+                AppLogger.warn(
+                    "SegWorker-${initialSegment.index}",
+                    "Part #${initialSegment.index} attempt $attempt/$maxAttempts failed: ${e.message}"
+                )
+                if (attempt < maxAttempts) {
+                    delay(350L * attempt)
                 }
             }
-        } catch (ce: CancellationException) {
-            activeCall.cancel()
-            throw ce
-        } catch (e: Exception) {
-            activeCall.cancel()
-            AppLogger.error(
-                "SegWorker-${initialSegment.index}",
-                "Part #${initialSegment.index} failed: ${e.message}",
-                e
-            )
-            throw e
         }
+
+        AppLogger.error(
+            "SegWorker-${initialSegment.index}",
+            "Part #${initialSegment.index} permanently failed after $maxAttempts attempts: ${lastException?.message}",
+            lastException
+        )
+        throw (lastException ?: IOException("Part #${initialSegment.index} failed"))
     }
 }
