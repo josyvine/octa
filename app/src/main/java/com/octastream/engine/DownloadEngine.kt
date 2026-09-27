@@ -34,7 +34,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Multi-threaded Parallel Segmented Download Coordinator (IDM Core).
- * Manages HTTP HEAD pre-flight inspection, byte-range segmentation, RandomAccessFile pre-allocation,
+ * Manages token-safe pre-flight inspection, byte-range segmentation, RandomAccessFile pre-allocation,
  * concurrent worker dispatch with preserved client identity, DASH video+audio multiplexing, and
  * true Pause/Resume state persistence.
  */
@@ -229,7 +229,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
 
         var currentTask = _tasks.value.find { it.id == taskId } ?: return
         if (currentTask.segments.isEmpty()) {
-            val preflight = performPreflightHead(streamUrl, effectiveUa, initialTask.customHeaders)
+            val preflight = performPreflight(streamUrl, effectiveUa, initialTask.customHeaders)
             AppLogger.network(
                 TAG,
                 "Pre-flight [${currentTask.title.take(24)}]: Content-Length=${preflight.contentLength}B, Accept-Ranges=${preflight.acceptRanges}"
@@ -361,8 +361,8 @@ class DownloadEngine private constructor(private val appContext: Context) {
 
         var currentTask = _tasks.value.find { it.id == taskId } ?: return
         if (currentTask.segments.isEmpty()) {
-            val videoPreflight = performPreflightHead(videoUrl, effectiveUa, initialTask.customHeaders)
-            val audioPreflight = performPreflightHead(audioUrl, effectiveUa, initialTask.customHeaders)
+            val videoPreflight = performPreflight(videoUrl, effectiveUa, initialTask.customHeaders)
+            val audioPreflight = performPreflight(audioUrl, effectiveUa, initialTask.customHeaders)
 
             AppLogger.network(
                 TAG,
@@ -376,8 +376,10 @@ class DownloadEngine private constructor(private val appContext: Context) {
             val useVideoRange = videoPreflight.acceptRanges && videoPreflight.contentLength > 0L
             val useAudioRange = audioPreflight.acceptRanges && audioPreflight.contentLength > 0L
 
+            // Video uses the full parallel thread pool (e.g. 4 threads)
             val videoThreads = if (useVideoRange) configuredThreads.coerceAtLeast(2) else 1
-            val audioThreads = if (useAudioRange) (configuredThreads / 2).coerceIn(1, 2) else 1
+            // Audio uses 1 dedicated thread to prevent Google Video concurrent connection limits (HTTP 403 on Part 6)
+            val audioThreads = 1
 
             if (useVideoRange && videoPreflight.contentLength > 0L) {
                 RandomAccessFile(videoTempFile, "rw").use { it.setLength(videoPreflight.contentLength) }
@@ -420,7 +422,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // Download both video and audio track segments concurrently with matched client identity
+        // Download both video and audio track segments concurrently
         coroutineScope {
             currentTask.segments.map { seg ->
                 async(Dispatchers.IO) {
@@ -562,13 +564,15 @@ class DownloadEngine private constructor(private val appContext: Context) {
         val acceptRanges: Boolean
     )
 
-    private suspend fun performPreflightHead(
+    private suspend fun performPreflight(
         url: String,
         customUa: String? = null,
         customHeaders: Map<String, String> = emptyMap()
     ): PreflightInfo = withContext(Dispatchers.IO) {
         val urlParamClen = MediaExtractor.extractContentLengthFromUrlParam(url)
-        if (urlParamClen > 0L && url.contains("googlevideo.com", ignoreCase = true)) {
+        val isGoogleVideo = url.contains("googlevideo.com", ignoreCase = true)
+
+        if (urlParamClen > 0L && isGoogleVideo) {
             return@withContext PreflightInfo(
                 contentLength = urlParamClen,
                 acceptRanges = true
@@ -577,38 +581,52 @@ class DownloadEngine private constructor(private val appContext: Context) {
 
         val userAgent = customUa ?: MediaExtractor.resolveUserAgentForUrl(url)
         var length = urlParamClen
-        var acceptsRange = false
+        var acceptsRange = isGoogleVideo
 
-        runCatching {
-            val headReqBuilder = Request.Builder()
-                .url(url)
-                .head()
-                .header("User-Agent", userAgent)
-                .header("Accept-Encoding", "identity")
+        // For Google Video, never send HEAD requests (they fail with HTTP 400/403 and burn tokens).
+        // Instead, use Range: bytes=0-0 GET directly to read total length from Content-Range.
+        if (!isGoogleVideo) {
+            runCatching {
+                val headReqBuilder = Request.Builder()
+                    .url(url)
+                    .head()
+                    .header("User-Agent", userAgent)
+                    .header("Accept-Encoding", "identity")
 
-            customHeaders.forEach { (k, v) ->
-                if (!k.equals("User-Agent", ignoreCase = true)) {
-                    headReqBuilder.header(k, v)
+                customHeaders.forEach { (k, v) ->
+                    if (!k.equals("User-Agent", ignoreCase = true)) {
+                        headReqBuilder.header(k, v)
+                    }
                 }
-            }
 
-            httpClient.newCall(headReqBuilder.build()).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val headerLen = resp.header("Content-Length")?.toLongOrNull() ?: -1L
-                    if (headerLen > 0L) length = headerLen
-                    acceptsRange = resp.header("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true
+                httpClient.newCall(headReqBuilder.build()).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val headerLen = resp.header("Content-Length")?.toLongOrNull() ?: -1L
+                        if (headerLen > 0L) length = headerLen
+                        acceptsRange = resp.header("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true
+                    }
                 }
             }
         }
 
         if (length <= 0L || !acceptsRange) {
             runCatching {
+                val rangeProbeUrl = if (isGoogleVideo) {
+                    val clean = url.replace(Regex("&range=[^&]*"), "")
+                    if (clean.contains("?")) "$clean&range=0-0" else "$clean?range=0-0"
+                } else {
+                    url
+                }
+
                 val rangeReqBuilder = Request.Builder()
-                    .url(url)
+                    .url(rangeProbeUrl)
                     .get()
-                    .header("Range", "bytes=0-0")
                     .header("User-Agent", userAgent)
                     .header("Accept-Encoding", "identity")
+
+                if (!isGoogleVideo) {
+                    rangeReqBuilder.header("Range", "bytes=0-0")
+                }
 
                 customHeaders.forEach { (k, v) ->
                     if (!k.equals("User-Agent", ignoreCase = true)) {
@@ -617,12 +635,15 @@ class DownloadEngine private constructor(private val appContext: Context) {
                 }
 
                 httpClient.newCall(rangeReqBuilder.build()).execute().use { resp ->
-                    if (resp.code == 206) {
+                    if (resp.code == 206 || (isGoogleVideo && resp.isSuccessful)) {
                         acceptsRange = true
                         val cr = resp.header("Content-Range")
                         if (cr != null && cr.contains("/")) {
                             val totalFromRange = cr.substringAfter("/").toLongOrNull() ?: -1L
                             if (totalFromRange > 0L) length = totalFromRange
+                        } else {
+                            val headerLen = resp.header("Content-Length")?.toLongOrNull() ?: -1L
+                            if (headerLen > 0L && length <= 0L) length = headerLen
                         }
                     } else if (resp.isSuccessful && length <= 0L) {
                         val headerLen = resp.header("Content-Length")?.toLongOrNull() ?: -1L
