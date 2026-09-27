@@ -18,8 +18,8 @@ import java.io.RandomAccessFile
 
 /**
  * Executes a single parallel byte-range worker thread against a pre-allocated target file
- * using RandomAccessFile("rw") and HTTP Range headers (with automatic `&range=` query parameter
- * binding and client User-Agent matching for YouTube googlevideo.com adaptive DASH streams).
+ * using RandomAccessFile("rw"). For Google Video CDN streams, applies server-level query
+ * range parameterization (`&range=`) while omitting duplicate HTTP headers to prevent HTTP 416.
  */
 class SegmentWorker(
     private val httpClient: OkHttpClient,
@@ -54,8 +54,7 @@ class SegmentWorker(
         val effectiveUa = userAgent ?: MediaExtractor.resolveUserAgentForUrl(url)
         val isGoogleVideo = url.contains("googlevideo.com", ignoreCase = true)
 
-        // For Google Video CDN streams, bind &range=start-end directly to the URL query string
-        // so that concurrent non-zero offset workers are recognized as valid media playback requests.
+        // For Google Video CDN streams, bind &range=start-end to the query string
         val effectiveUrl = if (useRangeHeader && endByte > 0L && isGoogleVideo) {
             val cleanUrl = url.replace(Regex("&range=[^&]*"), "")
             if (cleanUrl.contains("?")) {
@@ -88,13 +87,25 @@ class SegmentWorker(
             }
 
             if (useRangeHeader && endByte > 0L) {
-                val rangeHeader = "bytes=$resumeStartByte-$endByte"
-                requestBuilder.header("Range", rangeHeader)
-                if (attempt == 1) {
-                    AppLogger.network(
-                        "SegWorker-${initialSegment.index}",
-                        "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) requesting HTTP $rangeHeader"
-                    )
+                if (isGoogleVideo) {
+                    // Google Video handles the slice via &range= in effectiveUrl.
+                    // Omit the HTTP Range header here to prevent duplicate range evaluation and HTTP 416.
+                    if (attempt == 1) {
+                        AppLogger.network(
+                            "SegWorker-${initialSegment.index}",
+                            "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) requesting GoogleVideo range $resumeStartByte-$endByte"
+                        )
+                    }
+                } else {
+                    // Standard HTTP servers use the Range header
+                    val rangeHeader = "bytes=$resumeStartByte-$endByte"
+                    requestBuilder.header("Range", rangeHeader)
+                    if (attempt == 1) {
+                        AppLogger.network(
+                            "SegWorker-${initialSegment.index}",
+                            "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) requesting HTTP $rangeHeader"
+                        )
+                    }
                 }
             } else if (attempt == 1) {
                 AppLogger.network(
@@ -120,7 +131,7 @@ class SegmentWorker(
                     RandomAccessFile(targetFile, "rw").use { raf ->
                         val serverHonoredRange = useRangeHeader && (
                             resp.code == 206 ||
-                                effectiveUrl.contains("range=") ||
+                                (isGoogleVideo && effectiveUrl.contains("range=")) ||
                                 resp.header("Content-Range") != null
                             )
                         val seekOffset = if (serverHonoredRange) resumeStartByte else 0L
