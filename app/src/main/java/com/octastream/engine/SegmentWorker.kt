@@ -18,8 +18,9 @@ import java.io.RandomAccessFile
 
 /**
  * Executes a single parallel byte-range worker thread against a pre-allocated target file
- * using RandomAccessFile("rw"). Employs staggered connection handshakes and Google Video
- * server-level query range parameterization (`&range=`) to prevent concurrency 403 lockouts and 416 errors.
+ * using RandomAccessFile("rw"). For Google Video video streams, applies server-level query
+ * range parameterization (`&range=`). For audio tracks, uses clean native HTTP streaming without
+ * query mutation to prevent HTTP 403 Forbidden rejections.
  */
 class SegmentWorker(
     private val httpClient: OkHttpClient,
@@ -53,16 +54,19 @@ class SegmentWorker(
 
         val effectiveUa = userAgent ?: MediaExtractor.resolveUserAgentForUrl(url)
         val isGoogleVideo = url.contains("googlevideo.com", ignoreCase = true)
+        val isAudioRole = initialSegment.role.equals("AUDIO", ignoreCase = true)
 
-        // Stagger worker handshakes smoothly (80ms per worker index) so connections ramp up
-        // naturally instead of triggering Google Video CDN's simultaneous socket burst filter.
-        if (isGoogleVideo && initialSegment.index > 1) {
+        // Stagger video worker handshakes (80ms per index) to ramp connections smoothly.
+        if (isGoogleVideo && !isAudioRole && initialSegment.index > 1) {
             val staggerMs = ((initialSegment.index - 1) * 80L).coerceAtMost(400L)
             delay(staggerMs)
         }
 
-        // For Google Video CDN streams, bind &range=start-end to the query string
-        val effectiveUrl = if (useRangeHeader && endByte > 0L && isGoogleVideo) {
+        // Apply &range= query parameter ONLY to Google Video VIDEO streams.
+        // Google Video audio endpoints reject &range= in the query string with HTTP 403.
+        val shouldApplyGoogleVideoRangeParam = isGoogleVideo && !isAudioRole && useRangeHeader && endByte > 0L
+
+        val effectiveUrl = if (shouldApplyGoogleVideoRangeParam) {
             val cleanUrl = url.replace(Regex("&range=[^&]*"), "")
             if (cleanUrl.contains("?")) {
                 "$cleanUrl&range=$resumeStartByte-$endByte"
@@ -94,9 +98,9 @@ class SegmentWorker(
             }
 
             if (useRangeHeader && endByte > 0L) {
-                if (isGoogleVideo) {
-                    // Google Video handles the slice via &range= in effectiveUrl.
-                    // Omit HTTP Range header here to prevent duplicate range evaluation and HTTP 416.
+                if (shouldApplyGoogleVideoRangeParam) {
+                    // Google Video handles the video slice via &range= in effectiveUrl.
+                    // Omit HTTP Range header to prevent duplicate range evaluation and HTTP 416.
                     if (attempt == 1) {
                         AppLogger.network(
                             "SegWorker-${initialSegment.index}",
@@ -104,7 +108,7 @@ class SegmentWorker(
                         )
                     }
                 } else {
-                    // Standard HTTP servers use the Range header
+                    // Standard servers and audio range requests use the HTTP Range header
                     val rangeHeader = "bytes=$resumeStartByte-$endByte"
                     requestBuilder.header("Range", rangeHeader)
                     if (attempt == 1) {
@@ -117,7 +121,7 @@ class SegmentWorker(
             } else if (attempt == 1) {
                 AppLogger.network(
                     "SegWorker-${initialSegment.index}",
-                    "Task[${taskId.take(6)}] Part #${initialSegment.index} starting single-stream GET (offset=0)"
+                    "Task[${taskId.take(6)}] Part #${initialSegment.index} (${initialSegment.role}) starting single-stream GET (offset=0)"
                 )
             }
 
@@ -136,9 +140,9 @@ class SegmentWorker(
                         ?: throw IOException("Empty HTTP response body on Part #${initialSegment.index}")
 
                     RandomAccessFile(targetFile, "rw").use { raf ->
-                        val serverHonoredRange = useRangeHeader && (
+                        val serverHonoredRange = (useRangeHeader && endByte > 0L) && (
                             resp.code == 206 ||
-                                (isGoogleVideo && effectiveUrl.contains("range=")) ||
+                                (shouldApplyGoogleVideoRangeParam && effectiveUrl.contains("range=")) ||
                                 resp.header("Content-Range") != null
                             )
                         val seekOffset = if (serverHonoredRange) resumeStartByte else 0L
