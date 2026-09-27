@@ -281,7 +281,8 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // Dispatch segments with concurrency protection on Google Video
+        // For Google Video CDN: send only clean User-Agent without Innertube JSON API headers
+        val cleanHeaders = if (isGoogleVideo) emptyMap() else currentTask.customHeaders
         val useRange = currentTask.supportsRange && currentTask.totalBytes > 0L
         val maxConcurrency = if (isGoogleVideo) 2 else configuredThreads.coerceAtLeast(1)
         val semaphore = Semaphore(maxConcurrency)
@@ -298,7 +299,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
                             initialSegment = seg,
                             useRangeHeader = useRange && seg.endByte > 0L,
                             userAgent = effectiveUa,
-                            customHeaders = currentTask.customHeaders,
+                            customHeaders = cleanHeaders,
                             onSegmentProgress = { index, downloaded, speedBps, completed ->
                                 onWorkerProgress(taskId, index, downloaded, speedBps, completed)
                             }
@@ -385,15 +386,12 @@ class DownloadEngine private constructor(private val appContext: Context) {
             }
 
             val useVideoRange = videoPreflight.acceptRanges && videoPreflight.contentLength > 0L
-            val useAudioRange = audioPreflight.acceptRanges && audioPreflight.contentLength > 0L
-
             val videoThreads = if (useVideoRange) configuredThreads.coerceAtLeast(2) else 1
-            val audioThreads = 1
 
             if (useVideoRange && videoPreflight.contentLength > 0L) {
                 RandomAccessFile(videoTempFile, "rw").use { it.setLength(videoPreflight.contentLength) }
             }
-            if (useAudioRange && audioPreflight.contentLength > 0L) {
+            if (audioPreflight.contentLength > 0L) {
                 RandomAccessFile(audioTempFile, "rw").use { it.setLength(audioPreflight.contentLength) }
             }
 
@@ -404,12 +402,15 @@ class DownloadEngine private constructor(private val appContext: Context) {
                 startIndexOffset = 1,
                 useRange = useVideoRange
             )
+
+            // For Google Video: audio is a single continuous stream without &range= query parameter.
+            // On standard non-Google servers, useRange is supported.
             val audioSegments = buildSegments(
                 totalBytes = audioPreflight.contentLength,
-                threadCount = audioThreads,
+                threadCount = 1,
                 role = "AUDIO",
                 startIndexOffset = videoSegments.size + 1,
-                useRange = useAudioRange
+                useRange = !isGoogleVideo && audioPreflight.acceptRanges
             )
 
             val combinedSegments = videoSegments + audioSegments
@@ -420,7 +421,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
                 it.copy(
                     state = DownloadState.DOWNLOADING,
                     totalBytes = combinedTotalBytes,
-                    supportsRange = useVideoRange || useAudioRange,
+                    supportsRange = useVideoRange,
                     segments = combinedSegments,
                     errorMessage = null
                 )
@@ -431,9 +432,10 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // Dedicated pipeline: download audio first cleanly, then video with controlled concurrency
+        val cleanHeaders = if (isGoogleVideo) emptyMap() else currentTask.customHeaders
+
         if (isGoogleVideo) {
-            // Phase 1: Audio Track (single dedicated socket - downloads in ~200-400ms)
+            // Phase 1: Audio Track (clean single-stream GET with standard streaming)
             val audioSegments = currentTask.segments.filter { it.role == "AUDIO" && !it.isCompleted }
             for (seg in audioSegments) {
                 SegmentWorker(
@@ -442,9 +444,9 @@ class DownloadEngine private constructor(private val appContext: Context) {
                     url = audioUrl,
                     targetFile = audioTempFile,
                     initialSegment = seg,
-                    useRangeHeader = seg.endByte > 0L,
+                    useRangeHeader = false, // Clean GET without &range= query mutation for audio
                     userAgent = effectiveUa,
-                    customHeaders = currentTask.customHeaders,
+                    customHeaders = cleanHeaders,
                     onSegmentProgress = { index, downloaded, speedBps, completed ->
                         onWorkerProgress(taskId, index, downloaded, speedBps, completed)
                     }
@@ -453,7 +455,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
 
             currentTask = _tasks.value.find { it.id == taskId } ?: return
 
-            // Phase 2: Video Segments (throttled to 2 concurrent sockets to prevent CDN anti-burst lockout)
+            // Phase 2: Video Segments (controlled 2-worker concurrency to prevent CDN burst lockout)
             val videoSemaphore = Semaphore(2)
             val videoSegments = currentTask.segments.filter { it.role == "VIDEO" && !it.isCompleted }
             coroutineScope {
@@ -468,7 +470,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
                                 initialSegment = seg,
                                 useRangeHeader = seg.endByte > 0L,
                                 userAgent = effectiveUa,
-                                customHeaders = currentTask.customHeaders,
+                                customHeaders = cleanHeaders,
                                 onSegmentProgress = { index, downloaded, speedBps, completed ->
                                     onWorkerProgress(taskId, index, downloaded, speedBps, completed)
                                 }
@@ -494,7 +496,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
                             initialSegment = seg,
                             useRangeHeader = useRange,
                             userAgent = effectiveUa,
-                            customHeaders = currentTask.customHeaders,
+                            customHeaders = cleanHeaders,
                             onSegmentProgress = { index, downloaded, speedBps, completed ->
                                 onWorkerProgress(taskId, index, downloaded, speedBps, completed)
                             }
@@ -640,7 +642,6 @@ class DownloadEngine private constructor(private val appContext: Context) {
         var length = urlParamClen
         var acceptsRange = isGoogleVideo
 
-        // For Google Video, never send HEAD requests (they fail with HTTP 400/403 and burn tokens).
         if (!isGoogleVideo) {
             runCatching {
                 val headReqBuilder = Request.Builder()
@@ -682,12 +683,6 @@ class DownloadEngine private constructor(private val appContext: Context) {
 
                 if (!isGoogleVideo) {
                     rangeReqBuilder.header("Range", "bytes=0-0")
-                }
-
-                customHeaders.forEach { (k, v) ->
-                    if (!k.equals("User-Agent", ignoreCase = true)) {
-                        rangeReqBuilder.header(k, v)
-                    }
                 }
 
                 httpClient.newCall(rangeReqBuilder.build()).execute().use { resp ->
