@@ -15,7 +15,7 @@ import java.io.FileOutputStream
 /**
  * Handles Android Storage Access Framework (SAF) DocumentFile operations,
  * persistable URI permissions, cache staging directories, and moving final
- * media containers to the user-configured target folder.
+ * media containers to the user-configured target folder with safe filesystem naming.
  */
 object StorageHelper {
 
@@ -147,11 +147,31 @@ object StorageHelper {
         deletedCount
     }
 
+    /**
+     * Sanitizes file names for Linux/Android ext4 and f2fs filesystems.
+     * Prevents ENAMETOOLONG by capping the base title to a safe UTF-8 byte length (<= 100 bytes),
+     * ensuring that multi-byte Unicode scripts (e.g. Malayalam 3-4 bytes/char) and suffixes
+     * never exceed the OS 255-byte ceiling.
+     */
     fun sanitizeFileName(raw: String): String {
-        val cleaned = raw.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val extension = raw.substringAfterLast(".", "").let {
+            if (it.isNotBlank() && it.length <= 5 && !it.contains(" ")) ".$it" else ""
+        }
+        val nameWithoutExt = if (extension.isNotEmpty()) raw.substringBeforeLast(".") else raw
+
+        val cleaned = nameWithoutExt.replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F]"), "_")
             .replace(Regex("\\s+"), " ")
             .trim()
-        return if (cleaned.length > 96) cleaned.take(96) else cleaned.ifEmpty { "octastream_media" }
+            .ifEmpty { "octastream_media" }
+
+        // Safely truncate by UTF-8 bytes so the base name is <= 100 bytes
+        var safeName = cleaned
+        while (safeName.toByteArray(Charsets.UTF_8).size > 100 && safeName.isNotEmpty()) {
+            safeName = safeName.dropLast(1)
+        }
+        safeName = safeName.trim().ifEmpty { "octastream_media" }
+
+        return "$safeName$extension"
     }
 
     fun formatBytes(bytes: Long): String {
