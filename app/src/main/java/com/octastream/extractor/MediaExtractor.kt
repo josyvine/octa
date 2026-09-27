@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Custom OkHttp-backed Downloader for NewPipeExtractor that logs network telemetry
- * and avoids injecting web cookies into mobile/VR Innertube API requests.
+ * and avoids injecting web cookies into mobile Android Innertube API requests.
  */
 class OkHttpNewPipeDownloader(
     private val client: OkHttpClient
@@ -63,11 +63,10 @@ class OkHttpNewPipeDownloader(
             }
         }
 
-        // Only attach web consent cookies on HTML page requests, NOT on mobile/VR /youtubei/v1/player calls
+        // Only attach web consent cookies on HTML page requests, NOT on mobile Android /youtubei/v1/player calls
         val currentUa = headers["User-Agent"]?.firstOrNull() ?: ""
         val isMobileInnertubeCall = url.contains("/youtubei/v1/player") &&
             (currentUa.contains("com.google.android", ignoreCase = true) ||
-                currentUa.contains("com.google.ios", ignoreCase = true) ||
                 currentUa.contains("oculus", ignoreCase = true))
 
         if (!isMobileInnertubeCall && (url.contains("youtube.com") || url.contains("youtu.be"))) {
@@ -119,9 +118,9 @@ class OkHttpNewPipeDownloader(
 
 /**
  * Core extraction pipeline powered by:
- * 1) Multi-Client Direct YouTube Innertube Engine (IOS, ANDROID_VR, ANDROID_TESTSUITE, ANDROID_CREATOR)
+ * 1) Multi-Client Direct Android YouTube Innertube Engine (ANDROID_TESTSUITE, ANDROID_CREATOR, ANDROID, ANDROID_VR)
  *    to extract full high-resolution adaptiveFormats (4K / 1440p / 1080p / 720p / 480p / 360p + Audio).
- * 2) NewPipeExtractor (with adaptive stream preservation).
+ * 2) NewPipeExtractor fallback.
  * 3) Piped / Invidious API fallback.
  * 4) Direct HTTP/2 Range & Content-Length Manifest Prober.
  */
@@ -130,18 +129,16 @@ object MediaExtractor {
     private const val TAG = "MediaExtractor"
     private val initialized = AtomicBoolean(false)
 
-    private const val UA_IOS =
-        "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iPhone OS 18_2_1 like Mac OS X;)"
-    private const val UA_ANDROID_VR =
-        "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-    private const val UA_ANDROID_VR_LEGACY =
-        "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 10; Quest 2 Build/QQ3A.200805.001) gzip"
     private const val UA_ANDROID_TESTSUITE =
         "com.google.android.youtube/1.9 (Linux; U; Android 12; US) gzip"
     private const val UA_ANDROID_CREATOR =
         "com.google.android.apps.youtube.creator/24.47.100 (Linux; U; Android 14; US) gzip"
     private const val UA_ANDROID_CLIENT =
         "com.google.android.youtube/19.44.38 (Linux; U; Android 14; US) gzip"
+    private const val UA_ANDROID_VR =
+        "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+    private const val UA_ANDROID_VR_LEGACY =
+        "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 10; Quest 2 Build/QQ3A.200805.001) gzip"
     private const val UA_TV_EMBED =
         "Mozilla/5.0 (PlayStation; PlayStation 5/6.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"
     private const val UA_DEFAULT_BROWSER =
@@ -245,13 +242,12 @@ object MediaExtractor {
 
     fun resolveUserAgentForUrl(url: String): String {
         return when {
-            url.contains("c=IOS", ignoreCase = true) -> UA_IOS
-            url.contains("c=ANDROID_VR", ignoreCase = true) -> UA_ANDROID_VR
             url.contains("c=ANDROID_TESTSUITE", ignoreCase = true) -> UA_ANDROID_TESTSUITE
             url.contains("c=ANDROID_CREATOR", ignoreCase = true) -> UA_ANDROID_CREATOR
-            url.contains("c=TVHTML5", ignoreCase = true) -> UA_TV_EMBED
+            url.contains("c=ANDROID_VR", ignoreCase = true) -> UA_ANDROID_VR
             url.contains("c=ANDROID", ignoreCase = true) -> UA_ANDROID_CLIENT
-            else -> UA_DEFAULT_BROWSER
+            url.contains("c=TVHTML5", ignoreCase = true) -> UA_TV_EMBED
+            else -> UA_ANDROID_CLIENT
         }
     }
 
@@ -433,43 +429,8 @@ object MediaExtractor {
         videoId: String,
         sourceUrl: String
     ): StreamInfo? {
-        // Prioritize iOS client profile to eliminate bot challenges and extract true DASH formats
+        // Native Android-only Innertube clients (no Apple/iOS attestation requirements)
         val profiles = listOf(
-            InnertubeClientProfile(
-                name = "IOS (iPhone 16 Pro)",
-                clientName = "IOS",
-                clientVersion = "20.03.02",
-                userAgent = UA_IOS,
-                clientIdHeader = "5",
-                deviceMake = "Apple",
-                deviceModel = "iPhone16,2",
-                osName = "iPhone",
-                osVersion = "18.2.1.22C161"
-            ),
-            InnertubeClientProfile(
-                name = "ANDROID_VR (Quest 3)",
-                clientName = "ANDROID_VR",
-                clientVersion = "1.60.19",
-                userAgent = UA_ANDROID_VR,
-                clientIdHeader = "28",
-                deviceMake = "Oculus",
-                deviceModel = "Quest 3",
-                osName = "Android",
-                osVersion = "12L",
-                androidSdkVersion = 32
-            ),
-            InnertubeClientProfile(
-                name = "ANDROID_VR (Quest 2)",
-                clientName = "ANDROID_VR",
-                clientVersion = "1.56.21",
-                userAgent = UA_ANDROID_VR_LEGACY,
-                clientIdHeader = "28",
-                deviceMake = "Oculus",
-                deviceModel = "Quest 2",
-                osName = "Android",
-                osVersion = "10",
-                androidSdkVersion = 29
-            ),
             InnertubeClientProfile(
                 name = "ANDROID_TESTSUITE",
                 clientName = "ANDROID_TESTSUITE",
@@ -494,6 +455,30 @@ object MediaExtractor {
                 osName = "Android",
                 osVersion = "14",
                 androidSdkVersion = 34
+            ),
+            InnertubeClientProfile(
+                name = "ANDROID (Client)",
+                clientName = "ANDROID",
+                clientVersion = "19.44.38",
+                userAgent = UA_ANDROID_CLIENT,
+                clientIdHeader = "3",
+                deviceMake = "Google",
+                deviceModel = "Pixel 8",
+                osName = "Android",
+                osVersion = "14",
+                androidSdkVersion = 34
+            ),
+            InnertubeClientProfile(
+                name = "ANDROID_VR (Quest 3)",
+                clientName = "ANDROID_VR",
+                clientVersion = "1.60.19",
+                userAgent = UA_ANDROID_VR,
+                clientIdHeader = "28",
+                deviceMake = "Oculus",
+                deviceModel = "Quest 3",
+                osName = "Android",
+                osVersion = "12L",
+                androidSdkVersion = 32
             )
         )
 
@@ -645,8 +630,8 @@ object MediaExtractor {
                 JSONObject().put(
                     "client",
                     JSONObject()
-                        .put("clientName", "ANDROID_VR")
-                        .put("clientVersion", "1.60.19")
+                        .put("clientName", "ANDROID_TESTSUITE")
+                        .put("clientVersion", "1.9")
                         .put("hl", "en")
                         .put("gl", "US")
                         .put("utcOffsetMinutes", 0)
@@ -655,7 +640,7 @@ object MediaExtractor {
             val req = Request.Builder()
                 .url("https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false")
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .header("User-Agent", UA_ANDROID_VR)
+                .header("User-Agent", UA_ANDROID_TESTSUITE)
                 .build()
             sharedHttpClient.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
@@ -713,9 +698,7 @@ object MediaExtractor {
         val adaptiveJson = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
 
         val boundHeaders = mapOf(
-            "User-Agent" to profile.userAgent,
-            "X-YouTube-Client-Name" to profile.clientIdHeader,
-            "X-YouTube-Client-Version" to profile.clientVersion
+            "User-Agent" to profile.userAgent
         )
 
         data class RawTrack(
@@ -899,7 +882,7 @@ object MediaExtractor {
                 }
                 options.add(
                     QualityOption(
-                        label = "$qLabel Progressive ($container)",
+                        label = "$res Progressive ($container)",
                         resolution = res,
                         container = container,
                         codec = track.codecs,
@@ -931,7 +914,7 @@ object MediaExtractor {
                 options.add(
                     QualityOption(
                         label = "${kbps}kbps High-Fidelity Audio ($container)",
-                        resolution = "Audio ${kbps}k",
+                        resolution = "${kbps}kbps",
                         container = container,
                         codec = aTrack.codecs,
                         category = StreamCategory.AUDIO_ONLY,
@@ -1462,8 +1445,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 6_339_045L,
                     isDashMuxRequired = true,
                     bitrateKbps = 14500,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 ),
                 QualityOption(
                     label = "1440p 2K QHD DASH (Separated Video + Audio)",
@@ -1476,8 +1459,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 6_258_279L,
                     isDashMuxRequired = true,
                     bitrateKbps = 8200,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 ),
                 QualityOption(
                     label = "1080p Full HD DASH (Separated Video + Audio)",
@@ -1490,8 +1473,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 6_339_045L,
                     isDashMuxRequired = true,
                     bitrateKbps = 4500,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 ),
                 QualityOption(
                     label = "720p HD Progressive (MP4)",
@@ -1504,8 +1487,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 4_372_396L,
                     isDashMuxRequired = false,
                     bitrateKbps = 2100,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 ),
                 QualityOption(
                     label = "360p SD Progressive (Fast Stream)",
@@ -1518,8 +1501,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 1_756_185L,
                     isDashMuxRequired = false,
                     bitrateKbps = 800,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 ),
                 QualityOption(
                     label = "160kbps High-Bitrate Audio (M4A)",
@@ -1532,8 +1515,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 1_966_649L,
                     isDashMuxRequired = false,
                     bitrateKbps = 160,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 ),
                 QualityOption(
                     label = "192kbps Audio Track (WebM)",
@@ -1546,8 +1529,8 @@ object MediaExtractor {
                     estimatedSizeBytes = 1_756_185L,
                     isDashMuxRequired = false,
                     bitrateKbps = 192,
-                    userAgent = UA_DEFAULT_BROWSER,
-                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
+                    userAgent = UA_ANDROID_CLIENT,
+                    customHeaders = mapOf("User-Agent" to UA_ANDROID_CLIENT)
                 )
             )
         )
