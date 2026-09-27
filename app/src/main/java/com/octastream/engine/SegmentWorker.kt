@@ -19,8 +19,8 @@ import java.io.RandomAccessFile
 /**
  * Executes a single parallel byte-range worker thread against a pre-allocated target file
  * using RandomAccessFile("rw"). For Google Video video streams, applies server-level query
- * range parameterization (`&range=`). For audio tracks, uses clean native HTTP streaming without
- * query mutation to prevent HTTP 403 Forbidden rejections.
+ * range parameterization (`&range=`). For audio tracks, applies standard HTTP Range headers
+ * without query mutation to satisfy Google CDN's audio stream specifications.
  */
 class SegmentWorker(
     private val httpClient: OkHttpClient,
@@ -63,7 +63,7 @@ class SegmentWorker(
         }
 
         // Apply &range= query parameter ONLY to Google Video VIDEO streams.
-        // Google Video audio endpoints reject &range= in the query string with HTTP 403.
+        // Google Video audio endpoints require standard HTTP Range headers without query-string range mutation.
         val shouldApplyGoogleVideoRangeParam = isGoogleVideo && !isAudioRole && useRangeHeader && endByte > 0L
 
         val effectiveUrl = if (shouldApplyGoogleVideoRangeParam) {
@@ -100,7 +100,7 @@ class SegmentWorker(
             if (useRangeHeader && endByte > 0L) {
                 if (shouldApplyGoogleVideoRangeParam) {
                     // Google Video handles the video slice via &range= in effectiveUrl.
-                    // Omit HTTP Range header to prevent duplicate range evaluation and HTTP 416.
+                    // Omit HTTP Range header here to prevent duplicate range evaluation and HTTP 416.
                     if (attempt == 1) {
                         AppLogger.network(
                             "SegWorker-${initialSegment.index}",
