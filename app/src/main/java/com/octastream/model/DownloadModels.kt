@@ -27,9 +27,11 @@ data class QualityOption(
     val category: StreamCategory,
     val videoUrl: String?,
     val audioUrl: String?,           // Non-null for DASH_VIDEO or AUDIO_ONLY
-    val estimatedSizeBytes: Long,    // -1L if unknown until HEAD preflight
+    val estimatedSizeBytes: Long,    // -1L if unknown until preflight
     val isDashMuxRequired: Boolean,
-    val bitrateKbps: Int = 0
+    val bitrateKbps: Int = 0,
+    val userAgent: String? = null,
+    val customHeaders: Map<String, String> = emptyMap()
 )
 
 data class StreamInfo(
@@ -87,7 +89,9 @@ data class DownloadTask(
     val segments: List<DownloadSegment> = emptyList(),
     val outputFilePath: String? = null,
     val errorMessage: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val userAgent: String? = null,
+    val customHeaders: Map<String, String> = emptyMap()
 ) {
     val overallProgressFraction: Float
         get() = when {
