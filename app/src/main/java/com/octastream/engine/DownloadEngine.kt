@@ -35,7 +35,8 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Multi-threaded Parallel Segmented Download Coordinator (IDM Core).
  * Manages HTTP HEAD pre-flight inspection, byte-range segmentation, RandomAccessFile pre-allocation,
- * concurrent worker dispatch, DASH video+audio multiplexing, and true Pause/Resume state persistence.
+ * concurrent worker dispatch with preserved client identity, DASH video+audio multiplexing, and
+ * true Pause/Resume state persistence.
  */
 class DownloadEngine private constructor(private val appContext: Context) {
 
@@ -86,6 +87,10 @@ class DownloadEngine private constructor(private val appContext: Context) {
         val settings = preferenceManager.settings.value
         val threadCount = settings.threadCount.coerceIn(1, 16)
 
+        val resolvedUa = option.userAgent ?: MediaExtractor.resolveUserAgentForUrl(
+            option.videoUrl ?: option.audioUrl ?: streamInfo.sourceUrl
+        )
+
         val newTask = DownloadTask(
             sourceUrl = streamInfo.sourceUrl,
             title = streamInfo.title,
@@ -97,7 +102,9 @@ class DownloadEngine private constructor(private val appContext: Context) {
             isDash = option.isDashMuxRequired,
             threadCount = threadCount,
             state = DownloadState.QUEUED,
-            totalBytes = option.estimatedSizeBytes.coerceAtLeast(0L)
+            totalBytes = option.estimatedSizeBytes.coerceAtLeast(0L),
+            userAgent = resolvedUa,
+            customHeaders = option.customHeaders
         )
 
         _tasks.update { listOf(newTask) + it }
@@ -218,11 +225,11 @@ class DownloadEngine private constructor(private val appContext: Context) {
     ) {
         val taskId = initialTask.id
         val stagingFile = File(cacheDir, "task_${taskId}_main.tmp")
+        val effectiveUa = initialTask.userAgent ?: MediaExtractor.resolveUserAgentForUrl(streamUrl)
 
-        // 1. Pre-flight check if segments haven't been initialized yet
         var currentTask = _tasks.value.find { it.id == taskId } ?: return
         if (currentTask.segments.isEmpty()) {
-            val preflight = performPreflightHead(streamUrl)
+            val preflight = performPreflightHead(streamUrl, effectiveUa, initialTask.customHeaders)
             AppLogger.network(
                 TAG,
                 "Pre-flight [${currentTask.title.take(24)}]: Content-Length=${preflight.contentLength}B, Accept-Ranges=${preflight.acceptRanges}"
@@ -271,7 +278,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // 2. Dispatch all N segments in parallel
+        // Dispatch all segments with client User-Agent and headers
         val useRange = currentTask.supportsRange && currentTask.totalBytes > 0L
         coroutineScope {
             currentTask.segments.map { seg ->
@@ -283,6 +290,8 @@ class DownloadEngine private constructor(private val appContext: Context) {
                         targetFile = stagingFile,
                         initialSegment = seg,
                         useRangeHeader = useRange && seg.endByte > 0L,
+                        userAgent = effectiveUa,
+                        customHeaders = currentTask.customHeaders,
                         onSegmentProgress = { index, downloaded, speedBps, completed ->
                             onWorkerProgress(taskId, index, downloaded, speedBps, completed)
                         }
@@ -291,7 +300,6 @@ class DownloadEngine private constructor(private val appContext: Context) {
             }.awaitAll()
         }
 
-        // 3. Export completed file to user's SAF directory (or fallback Downloads)
         val ext = currentTask.container.lowercase()
         val mime = when (ext) {
             "m4a" -> "audio/mp4"
@@ -339,6 +347,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
         val taskId = initialTask.id
         val videoUrl = initialTask.videoUrl ?: throw IOException("Missing DASH video URL")
         val audioUrl = initialTask.audioUrl ?: throw IOException("Missing DASH audio URL")
+        val effectiveUa = initialTask.userAgent ?: MediaExtractor.resolveUserAgentForUrl(videoUrl)
 
         val isWebmContainer = initialTask.container.equals("WEBM", ignoreCase = true)
         val videoExt = if (isWebmContainer) "webm" else "mp4"
@@ -352,8 +361,8 @@ class DownloadEngine private constructor(private val appContext: Context) {
 
         var currentTask = _tasks.value.find { it.id == taskId } ?: return
         if (currentTask.segments.isEmpty()) {
-            val videoPreflight = performPreflightHead(videoUrl)
-            val audioPreflight = performPreflightHead(audioUrl)
+            val videoPreflight = performPreflightHead(videoUrl, effectiveUa, initialTask.customHeaders)
+            val audioPreflight = performPreflightHead(audioUrl, effectiveUa, initialTask.customHeaders)
 
             AppLogger.network(
                 TAG,
@@ -411,7 +420,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // Download both video and audio track segments concurrently
+        // Download both video and audio track segments concurrently with matched client identity
         coroutineScope {
             currentTask.segments.map { seg ->
                 async(Dispatchers.IO) {
@@ -426,6 +435,8 @@ class DownloadEngine private constructor(private val appContext: Context) {
                         targetFile = targetFile,
                         initialSegment = seg,
                         useRangeHeader = useRange,
+                        userAgent = effectiveUa,
+                        customHeaders = currentTask.customHeaders,
                         onSegmentProgress = { index, downloaded, speedBps, completed ->
                             onWorkerProgress(taskId, index, downloaded, speedBps, completed)
                         }
@@ -434,7 +445,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
             }.awaitAll()
         }
 
-        // Transition to MUXING state and stitch DASH tracks without re-encoding
+        // Transition to MUXING state and stitch DASH tracks losslessly
         updateTaskState(taskId, forcePersist = true) {
             it.copy(
                 state = DownloadState.MUXING,
@@ -459,7 +470,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
             safTreeUriString = preferenceManager.settings.value.safDirectoryUri
         )
 
-        // Cleanup temporary DASH cache files
+        // Cleanup temporary cache files
         videoTempFile.delete()
         audioTempFile.delete()
         muxedTempFile.delete()
@@ -551,8 +562,11 @@ class DownloadEngine private constructor(private val appContext: Context) {
         val acceptRanges: Boolean
     )
 
-    private suspend fun performPreflightHead(url: String): PreflightInfo = withContext(Dispatchers.IO) {
-        // 1. Check if URL itself carries a signed `clen=` parameter (e.g., YouTube googlevideo.com streams)
+    private suspend fun performPreflightHead(
+        url: String,
+        customUa: String? = null,
+        customHeaders: Map<String, String> = emptyMap()
+    ): PreflightInfo = withContext(Dispatchers.IO) {
         val urlParamClen = MediaExtractor.extractContentLengthFromUrlParam(url)
         if (urlParamClen > 0L && url.contains("googlevideo.com", ignoreCase = true)) {
             return@withContext PreflightInfo(
@@ -561,19 +575,24 @@ class DownloadEngine private constructor(private val appContext: Context) {
             )
         }
 
-        val userAgent = MediaExtractor.resolveUserAgentForUrl(url)
+        val userAgent = customUa ?: MediaExtractor.resolveUserAgentForUrl(url)
         var length = urlParamClen
         var acceptsRange = false
 
-        // 2. Try HTTP HEAD check (only read headers if response is 2xx successful)
         runCatching {
-            val headReq = Request.Builder()
+            val headReqBuilder = Request.Builder()
                 .url(url)
                 .head()
                 .header("User-Agent", userAgent)
                 .header("Accept-Encoding", "identity")
-                .build()
-            httpClient.newCall(headReq).execute().use { resp ->
+
+            customHeaders.forEach { (k, v) ->
+                if (!k.equals("User-Agent", ignoreCase = true)) {
+                    headReqBuilder.header(k, v)
+                }
+            }
+
+            httpClient.newCall(headReqBuilder.build()).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val headerLen = resp.header("Content-Length")?.toLongOrNull() ?: -1L
                     if (headerLen > 0L) length = headerLen
@@ -582,17 +601,22 @@ class DownloadEngine private constructor(private val appContext: Context) {
             }
         }
 
-        // 3. Fallback Range: bytes=0-0 probe if length or range capability still unknown
         if (length <= 0L || !acceptsRange) {
             runCatching {
-                val rangeReq = Request.Builder()
+                val rangeReqBuilder = Request.Builder()
                     .url(url)
                     .get()
                     .header("Range", "bytes=0-0")
                     .header("User-Agent", userAgent)
                     .header("Accept-Encoding", "identity")
-                    .build()
-                httpClient.newCall(rangeReq).execute().use { resp ->
+
+                customHeaders.forEach { (k, v) ->
+                    if (!k.equals("User-Agent", ignoreCase = true)) {
+                        rangeReqBuilder.header(k, v)
+                    }
+                }
+
+                httpClient.newCall(rangeReqBuilder.build()).execute().use { resp ->
                     if (resp.code == 206) {
                         acceptsRange = true
                         val cr = resp.header("Content-Range")
