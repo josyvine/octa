@@ -18,8 +18,8 @@ import java.io.RandomAccessFile
 
 /**
  * Executes a single parallel byte-range worker thread against a pre-allocated target file
- * using RandomAccessFile("rw"). For Google Video CDN streams, applies server-level query
- * range parameterization (`&range=`) while omitting duplicate HTTP headers to prevent HTTP 416.
+ * using RandomAccessFile("rw"). Employs staggered connection handshakes and Google Video
+ * server-level query range parameterization (`&range=`) to prevent concurrency 403 lockouts and 416 errors.
  */
 class SegmentWorker(
     private val httpClient: OkHttpClient,
@@ -53,6 +53,13 @@ class SegmentWorker(
 
         val effectiveUa = userAgent ?: MediaExtractor.resolveUserAgentForUrl(url)
         val isGoogleVideo = url.contains("googlevideo.com", ignoreCase = true)
+
+        // Stagger worker handshakes smoothly (80ms per worker index) so connections ramp up
+        // naturally instead of triggering Google Video CDN's simultaneous socket burst filter.
+        if (isGoogleVideo && initialSegment.index > 1) {
+            val staggerMs = ((initialSegment.index - 1) * 80L).coerceAtMost(400L)
+            delay(staggerMs)
+        }
 
         // For Google Video CDN streams, bind &range=start-end to the query string
         val effectiveUrl = if (useRangeHeader && endByte > 0L && isGoogleVideo) {
@@ -89,7 +96,7 @@ class SegmentWorker(
             if (useRangeHeader && endByte > 0L) {
                 if (isGoogleVideo) {
                     // Google Video handles the slice via &range= in effectiveUrl.
-                    // Omit the HTTP Range header here to prevent duplicate range evaluation and HTTP 416.
+                    // Omit HTTP Range header here to prevent duplicate range evaluation and HTTP 416.
                     if (attempt == 1) {
                         AppLogger.network(
                             "SegWorker-${initialSegment.index}",
@@ -202,7 +209,7 @@ class SegmentWorker(
                     "Part #${initialSegment.index} attempt $attempt/$maxAttempts failed: ${e.message}"
                 )
                 if (attempt < maxAttempts) {
-                    delay(350L * attempt)
+                    delay(500L * attempt)
                 }
             }
         }
