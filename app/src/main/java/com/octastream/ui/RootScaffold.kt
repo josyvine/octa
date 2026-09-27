@@ -69,7 +69,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -131,7 +130,7 @@ fun RootScaffold(
     }
     val liveSpeedBps = tasks.sumOf { it.speedBytesPerSec }
 
-    // Root Box overlay containing Scaffold + Draggable Log Console Bubble
+    // Root Box overlay containing Scaffold + Draggable Diagnostic Bubble
     Box(modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isExpandedScreen = maxWidth >= 720.dp
@@ -151,7 +150,13 @@ fun RootScaffold(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
-                                    .clickable { viewModel.selectTab(OctaTab.LANDING) }
+                                    .clickable {
+                                        if (selectedTab == OctaTab.LANDING) {
+                                            viewModel.selectTab(OctaTab.FETCH)
+                                        } else {
+                                            viewModel.selectTab(OctaTab.LANDING)
+                                        }
+                                    }
                                     .padding(vertical = 4.dp, horizontal = 4.dp)
                             ) {
                                 Box(
@@ -292,7 +297,7 @@ fun RootScaffold(
             }
         }
 
-        // Global Floating Diagnostic Log Bubble & Terminal Console Overlay
+        // Global Floating Diagnostic Log Bubble & Fullscreen Terminal Overlay
         FloatingLogBubbleOverlay(
             logs = logs,
             unreadAlertCount = unreadAlertCount,
@@ -318,7 +323,7 @@ private fun LandingScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Hero Image Card
+        // Hero Image Banner Card
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -407,7 +412,7 @@ private fun LandingScreen(
             }
         }
 
-        // Action CTA Button
+        // Action CTA Button -> Opens Clean Extractor
         Button(
             onClick = onLaunchExtractor,
             modifier = Modifier
@@ -431,7 +436,7 @@ private fun LandingScreen(
             )
         }
 
-        // Architecture Features Overview
+        // Core Architectural Capabilities
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
