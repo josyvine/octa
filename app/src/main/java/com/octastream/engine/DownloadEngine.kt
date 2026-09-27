@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
@@ -226,6 +228,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
         val taskId = initialTask.id
         val stagingFile = File(cacheDir, "task_${taskId}_main.tmp")
         val effectiveUa = initialTask.userAgent ?: MediaExtractor.resolveUserAgentForUrl(streamUrl)
+        val isGoogleVideo = streamUrl.contains("googlevideo.com", ignoreCase = true)
 
         var currentTask = _tasks.value.find { it.id == taskId } ?: return
         if (currentTask.segments.isEmpty()) {
@@ -278,24 +281,29 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // Dispatch all segments with client User-Agent and headers
+        // Dispatch segments with concurrency protection on Google Video
         val useRange = currentTask.supportsRange && currentTask.totalBytes > 0L
+        val maxConcurrency = if (isGoogleVideo) 2 else configuredThreads.coerceAtLeast(1)
+        val semaphore = Semaphore(maxConcurrency)
+
         coroutineScope {
-            currentTask.segments.map { seg ->
+            currentTask.segments.filterNot { it.isCompleted }.map { seg ->
                 async(Dispatchers.IO) {
-                    SegmentWorker(
-                        httpClient = httpClient,
-                        taskId = taskId,
-                        url = streamUrl,
-                        targetFile = stagingFile,
-                        initialSegment = seg,
-                        useRangeHeader = useRange && seg.endByte > 0L,
-                        userAgent = effectiveUa,
-                        customHeaders = currentTask.customHeaders,
-                        onSegmentProgress = { index, downloaded, speedBps, completed ->
-                            onWorkerProgress(taskId, index, downloaded, speedBps, completed)
-                        }
-                    ).execute()
+                    semaphore.withPermit {
+                        SegmentWorker(
+                            httpClient = httpClient,
+                            taskId = taskId,
+                            url = streamUrl,
+                            targetFile = stagingFile,
+                            initialSegment = seg,
+                            useRangeHeader = useRange && seg.endByte > 0L,
+                            userAgent = effectiveUa,
+                            customHeaders = currentTask.customHeaders,
+                            onSegmentProgress = { index, downloaded, speedBps, completed ->
+                                onWorkerProgress(taskId, index, downloaded, speedBps, completed)
+                            }
+                        ).execute()
+                    }
                 }
             }.awaitAll()
         }
@@ -349,6 +357,9 @@ class DownloadEngine private constructor(private val appContext: Context) {
         val audioUrl = initialTask.audioUrl ?: throw IOException("Missing DASH audio URL")
         val effectiveUa = initialTask.userAgent ?: MediaExtractor.resolveUserAgentForUrl(videoUrl)
 
+        val isGoogleVideo = videoUrl.contains("googlevideo.com", ignoreCase = true) ||
+            audioUrl.contains("googlevideo.com", ignoreCase = true)
+
         val isWebmContainer = initialTask.container.equals("WEBM", ignoreCase = true)
         val videoExt = if (isWebmContainer) "webm" else "mp4"
         val audioExt = if (isWebmContainer) "webm" else "m4a"
@@ -376,9 +387,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
             val useVideoRange = videoPreflight.acceptRanges && videoPreflight.contentLength > 0L
             val useAudioRange = audioPreflight.acceptRanges && audioPreflight.contentLength > 0L
 
-            // Video uses the full parallel thread pool (e.g. 4 threads)
             val videoThreads = if (useVideoRange) configuredThreads.coerceAtLeast(2) else 1
-            // Audio uses 1 dedicated thread to prevent Google Video concurrent connection limits (HTTP 403 on Part 6)
             val audioThreads = 1
 
             if (useVideoRange && videoPreflight.contentLength > 0L) {
@@ -422,29 +431,77 @@ class DownloadEngine private constructor(private val appContext: Context) {
             } ?: return
         }
 
-        // Download both video and audio track segments concurrently
-        coroutineScope {
-            currentTask.segments.map { seg ->
-                async(Dispatchers.IO) {
-                    val isAudio = seg.role == "AUDIO"
-                    val targetFile = if (isAudio) audioTempFile else videoTempFile
-                    val targetUrl = if (isAudio) audioUrl else videoUrl
-                    val useRange = seg.endByte > 0L
-                    SegmentWorker(
-                        httpClient = httpClient,
-                        taskId = taskId,
-                        url = targetUrl,
-                        targetFile = targetFile,
-                        initialSegment = seg,
-                        useRangeHeader = useRange,
-                        userAgent = effectiveUa,
-                        customHeaders = currentTask.customHeaders,
-                        onSegmentProgress = { index, downloaded, speedBps, completed ->
-                            onWorkerProgress(taskId, index, downloaded, speedBps, completed)
+        // Dedicated pipeline: download audio first cleanly, then video with controlled concurrency
+        if (isGoogleVideo) {
+            // Phase 1: Audio Track (single dedicated socket - downloads in ~200-400ms)
+            val audioSegments = currentTask.segments.filter { it.role == "AUDIO" && !it.isCompleted }
+            for (seg in audioSegments) {
+                SegmentWorker(
+                    httpClient = httpClient,
+                    taskId = taskId,
+                    url = audioUrl,
+                    targetFile = audioTempFile,
+                    initialSegment = seg,
+                    useRangeHeader = seg.endByte > 0L,
+                    userAgent = effectiveUa,
+                    customHeaders = currentTask.customHeaders,
+                    onSegmentProgress = { index, downloaded, speedBps, completed ->
+                        onWorkerProgress(taskId, index, downloaded, speedBps, completed)
+                    }
+                ).execute()
+            }
+
+            currentTask = _tasks.value.find { it.id == taskId } ?: return
+
+            // Phase 2: Video Segments (throttled to 2 concurrent sockets to prevent CDN anti-burst lockout)
+            val videoSemaphore = Semaphore(2)
+            val videoSegments = currentTask.segments.filter { it.role == "VIDEO" && !it.isCompleted }
+            coroutineScope {
+                videoSegments.map { seg ->
+                    async(Dispatchers.IO) {
+                        videoSemaphore.withPermit {
+                            SegmentWorker(
+                                httpClient = httpClient,
+                                taskId = taskId,
+                                url = videoUrl,
+                                targetFile = videoTempFile,
+                                initialSegment = seg,
+                                useRangeHeader = seg.endByte > 0L,
+                                userAgent = effectiveUa,
+                                customHeaders = currentTask.customHeaders,
+                                onSegmentProgress = { index, downloaded, speedBps, completed ->
+                                    onWorkerProgress(taskId, index, downloaded, speedBps, completed)
+                                }
+                            ).execute()
                         }
-                    ).execute()
-                }
-            }.awaitAll()
+                    }
+                }.awaitAll()
+            }
+        } else {
+            // Standard non-Google CDN servers: parallel download across all segments
+            coroutineScope {
+                currentTask.segments.filterNot { it.isCompleted }.map { seg ->
+                    async(Dispatchers.IO) {
+                        val isAudio = seg.role == "AUDIO"
+                        val targetFile = if (isAudio) audioTempFile else videoTempFile
+                        val targetUrl = if (isAudio) audioUrl else videoUrl
+                        val useRange = seg.endByte > 0L
+                        SegmentWorker(
+                            httpClient = httpClient,
+                            taskId = taskId,
+                            url = targetUrl,
+                            targetFile = targetFile,
+                            initialSegment = seg,
+                            useRangeHeader = useRange,
+                            userAgent = effectiveUa,
+                            customHeaders = currentTask.customHeaders,
+                            onSegmentProgress = { index, downloaded, speedBps, completed ->
+                                onWorkerProgress(taskId, index, downloaded, speedBps, completed)
+                            }
+                        ).execute()
+                    }
+                }.awaitAll()
+            }
         }
 
         // Transition to MUXING state and stitch DASH tracks losslessly
@@ -584,7 +641,6 @@ class DownloadEngine private constructor(private val appContext: Context) {
         var acceptsRange = isGoogleVideo
 
         // For Google Video, never send HEAD requests (they fail with HTTP 400/403 and burn tokens).
-        // Instead, use Range: bytes=0-0 GET directly to read total length from Content-Range.
         if (!isGoogleVideo) {
             runCatching {
                 val headReqBuilder = Request.Builder()
