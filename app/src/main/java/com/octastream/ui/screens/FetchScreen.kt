@@ -17,10 +17,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bolt
@@ -30,7 +33,6 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HighQuality
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MovieFilter
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -63,7 +65,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -98,309 +99,262 @@ fun FetchScreen(
 ) {
     val clipboardManager = LocalClipboardManager.current
     val isResolving = extractionState is ExtractionUiState.Resolving
+    val scrollState = rememberScrollState()
 
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter
     ) {
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 680.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .widthIn(max = 640.dp)
+                .verticalScroll(scrollState)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // 1. Primary Extraction Card (Input + Paste + Clear + Fetch)
-            item {
-                Card(
-                    shape = MaterialTheme.shapes.large,
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
+            // 1. Compact Stream Extractor Card (Snug fit at the top)
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight()
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                        RoundedCornerShape(16.dp)
+                    )
+            ) {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(
-                            1.dp,
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                            MaterialTheme.shapes.large
-                        )
+                        .wrapContentHeight()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    // Title Bar inside Card
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.weight(1f)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(OctaCyan.copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Link,
+                                    contentDescription = null,
+                                    tint = OctaCyan,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Stream Extractor",
+                                    fontFamily = SpaceGroteskFamily,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Enter direct media link or manifest URL",
+                                    fontFamily = JetBrainsMonoFamily,
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = OctaCyan.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "HTTP RANGE",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = OctaCyan,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    // Input Field (Placed immediately below header)
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = onUrlChanged,
+                        enabled = !isResolving,
+                        label = { Text("Media Stream or Video URL", fontSize = 12.sp) },
+                        placeholder = {
+                            Text(
+                                text = "https://example.com/video/stream.mp4",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            )
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = OctaCyan,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                        ),
+                        trailingIcon = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
+                                if (urlInput.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = onClearUrl,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("clear_url_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "Clear",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = {
+                                        val clipText = clipboardManager.getText()?.text
+                                        if (!clipText.isNullOrBlank()) {
+                                            onUrlChanged(clipText.trim())
+                                        }
+                                    },
                                     modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(OctaCyan.copy(alpha = 0.16f)),
-                                    contentAlignment = Alignment.Center
+                                        .size(36.dp)
+                                        .testTag("paste_clipboard_button")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Link,
-                                        contentDescription = null,
+                                        imageVector = Icons.Default.ContentPaste,
+                                        contentDescription = "Paste",
                                         tint = OctaCyan,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Stream Extractor",
-                                        fontFamily = SpaceGroteskFamily,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "Enter direct media link or manifest URL",
-                                        fontFamily = JetBrainsMonoFamily,
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
                             }
-                            Surface(
-                                color = OctaCyan.copy(alpha = 0.14f),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text(
-                                    text = "HTTP RANGE READY",
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = OctaCyan,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("url_input_field")
+                    )
 
-                        OutlinedTextField(
-                            value = urlInput,
-                            onValueChange = onUrlChanged,
-                            enabled = !isResolving,
-                            label = { Text("Media Stream or Video URL") },
-                            placeholder = {
-                                Text(
-                                    text = "https://example.com/video/stream.mp4",
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
-                            },
-                            singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = OctaCyan,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
-                            ),
-                            trailingIcon = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (urlInput.isNotEmpty()) {
-                                        IconButton(
-                                            onClick = onClearUrl,
-                                            modifier = Modifier.testTag("clear_url_button")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Clear,
-                                                contentDescription = "Clear",
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            val clipText = clipboardManager.getText()?.text
-                                            if (!clipText.isNullOrBlank()) {
-                                                onUrlChanged(clipText.trim())
-                                            }
-                                        },
-                                        modifier = Modifier.testTag("paste_clipboard_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ContentPaste,
-                                            contentDescription = "Paste from clipboard",
-                                            tint = OctaCyan
-                                        )
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("url_input_field")
-                        )
-
-                        // Error Banner if extraction encounters an issue
-                        AnimatedVisibility(visible = extractionState is ExtractionUiState.Error) {
-                            val errMsg = (extractionState as? ExtractionUiState.Error)?.message ?: ""
-                            Surface(
-                                color = OctaCoralRed.copy(alpha = 0.14f),
-                                shape = MaterialTheme.shapes.small,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ErrorOutline,
-                                        contentDescription = null,
-                                        tint = OctaCoralRed,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = errMsg,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = OctaCoralRed
-                                    )
-                                }
-                            }
-                        }
-
-                        Button(
-                            onClick = { onFetchClicked(null) },
-                            enabled = !isResolving,
-                            shape = MaterialTheme.shapes.medium,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = OctaCyan,
-                                contentColor = Color(0xFF002227)
-                            ),
-                            contentPadding = PaddingValues(vertical = 14.dp, horizontal = 20.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("fetch_streams_button")
+                    // Error Notification if resolution fails
+                    AnimatedVisibility(visible = extractionState is ExtractionUiState.Error) {
+                        val errMsg = (extractionState as? ExtractionUiState.Error)?.message ?: ""
+                        Surface(
+                            color = OctaCoralRed.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            if (isResolving) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.5.dp,
-                                    color = Color(0xFF002227)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text(
-                                    text = "Analyzing Manifest & Probing Streams...",
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            } else {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.Bolt,
+                                    imageVector = Icons.Default.ErrorOutline,
                                     contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
+                                    tint = OctaCoralRed,
+                                    modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "EXTRACT STREAM MANIFEST",
-                                    fontFamily = SpaceGroteskFamily,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold
+                                    text = errMsg,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    color = OctaCoralRed
                                 )
                             }
                         }
                     }
-                }
-            }
 
-            // 2. Active Engine Metric Indicators
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    PipelineMetricCard(
-                        title = "$configuredThreads Threads",
-                        subtitle = "HTTP Byte-Range",
-                        accent = OctaCyan,
-                        modifier = Modifier.weight(1f)
-                    )
-                    PipelineMetricCard(
-                        title = "DASH Muxer",
-                        subtitle = "-c copy Hardware",
-                        accent = OctaEmerald,
-                        modifier = Modifier.weight(1f)
-                    )
-                    PipelineMetricCard(
-                        title = "RandomAccess",
-                        subtitle = "True Pause/Resume",
-                        accent = OctaAmber,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // 3. Clean Empty-State Guidance Card
-            item {
-                Card(
-                    shape = MaterialTheme.shapes.medium,
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(
-                            1.dp,
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                            MaterialTheme.shapes.medium
-                        )
-                ) {
-                    Column(
+                    // Extract Stream Manifest Action Button
+                    Button(
+                        onClick = { onFetchClicked(null) },
+                        enabled = !isResolving,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OctaCyan,
+                            contentColor = Color(0xFF002227)
+                        ),
+                        contentPadding = PaddingValues(vertical = 13.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                            .testTag("fetch_streams_button")
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(OctaCyan.copy(alpha = 0.12f)),
-                            contentAlignment = Alignment.Center
-                        ) {
+                        if (isResolving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFF002227)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Probing Streams...",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
                             Icon(
-                                imageVector = Icons.Default.Info,
+                                imageVector = Icons.Default.Bolt,
                                 contentDescription = null,
-                                tint = OctaCyan,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "EXTRACT STREAM MANIFEST",
+                                fontFamily = SpaceGroteskFamily,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
-
-                        Text(
-                            text = "Clean Parallel Transfer Ready",
-                            fontFamily = SpaceGroteskFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-
-                        Text(
-                            text = "Paste any media stream, HLS/DASH manifest, or video link above. OctaStream extracts available resolution streams, decodes formats, and coordinates high-speed parallel chunk downloads directly to your storage.",
-                            fontFamily = JetBrainsMonoFamily,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 16.sp
-                        )
                     }
                 }
             }
 
-            item {
-                Spacer(modifier = Modifier.height(72.dp))
+            // 2. Telemetry Indicator Pills (Clean, non-wrapping row)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PipelineMetricCard(
+                    title = "$configuredThreads Threads",
+                    subtitle = "HTTP Range",
+                    accent = OctaCyan,
+                    modifier = Modifier.weight(1f)
+                )
+                PipelineMetricCard(
+                    title = "DASH Muxer",
+                    subtitle = "Stream-Copy",
+                    accent = OctaEmerald,
+                    modifier = Modifier.weight(1f)
+                )
+                PipelineMetricCard(
+                    title = "RandomAccess",
+                    subtitle = "True Resume",
+                    accent = OctaAmber,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
 
-        // 4. Quality Picker Bottom Sheet
+        // 3. Quality Picker Bottom Sheet
         if (extractionState is ExtractionUiState.Success) {
             QualityPickerBottomSheet(
                 streamInfo = extractionState.streamInfo,
@@ -422,30 +376,40 @@ private fun PipelineMetricCard(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(10.dp),
         modifier = modifier.border(
             1.dp,
             accent.copy(alpha = 0.3f),
-            MaterialTheme.shapes.medium
+            RoundedCornerShape(10.dp)
         )
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
             Text(
                 text = title,
                 fontFamily = JetBrainsMonoFamily,
                 fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
-                color = accent
+                fontSize = 11.sp,
+                color = accent,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                fontSize = 11.sp,
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 9.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
         }
     }
