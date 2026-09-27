@@ -1,7 +1,6 @@
 package com.octastream.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AudioFile
@@ -30,13 +30,10 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HighQuality
-import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MovieFilter
-import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -61,7 +58,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -69,6 +65,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -76,13 +73,12 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.OctaAmber
-import com.example.ui.theme.OctaCobalt
 import com.example.ui.theme.OctaCoralRed
 import com.example.ui.theme.OctaCyan
 import com.example.ui.theme.OctaEmerald
+import com.example.ui.theme.SpaceGroteskFamily
 import com.octastream.data.StorageHelper
 import com.octastream.model.QualityOption
-import com.octastream.model.SampleStreamPreset
 import com.octastream.model.StreamCategory
 import com.octastream.model.StreamInfo
 import com.octastream.ui.viewmodel.ExtractionUiState
@@ -94,7 +90,6 @@ fun FetchScreen(
     urlInput: String,
     extractionState: ExtractionUiState,
     configuredThreads: Int,
-    presets: List<SampleStreamPreset>,
     onUrlChanged: (String) -> Unit,
     onClearUrl: () -> Unit,
     onFetchClicked: (String?) -> Unit,
@@ -115,12 +110,7 @@ fun FetchScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Hero Banner Card
-            item {
-                HeroHeaderBanner(configuredThreads = configuredThreads)
-            }
-
-            // 2. Primary Extraction Card (URL Input + Paste + Clear + Fetch Action)
+            // 1. Primary Extraction Card (Input + Paste + Clear + Fetch)
             item {
                 Card(
                     shape = MaterialTheme.shapes.large,
@@ -131,7 +121,7 @@ fun FetchScreen(
                         .fillMaxWidth()
                         .border(
                             1.dp,
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
                             MaterialTheme.shapes.large
                         )
                 ) {
@@ -147,26 +137,46 @@ fun FetchScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Link,
-                                    contentDescription = null,
-                                    tint = OctaCyan,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Direct Stream Extractor",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(OctaCyan.copy(alpha = 0.16f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Link,
+                                        contentDescription = null,
+                                        tint = OctaCyan,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Stream Extractor",
+                                        fontFamily = SpaceGroteskFamily,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Enter direct media link or manifest URL",
+                                        fontFamily = JetBrainsMonoFamily,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                             Surface(
                                 color = OctaCyan.copy(alpha = 0.14f),
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
-                                    text = "NewPipe + HTTP Range",
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = "HTTP RANGE READY",
+                                    fontFamily = JetBrainsMonoFamily,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
                                     color = OctaCyan,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
@@ -177,18 +187,20 @@ fun FetchScreen(
                             value = urlInput,
                             onValueChange = onUrlChanged,
                             enabled = !isResolving,
-                            label = { Text(stringResource(R.string.url_input_label)) },
+                            label = { Text("Media Stream or Video URL") },
                             placeholder = {
                                 Text(
-                                    text = stringResource(R.string.url_input_placeholder),
-                                    style = MaterialTheme.typography.bodySmall
+                                    text = "https://example.com/video/stream.mp4",
+                                    fontFamily = JetBrainsMonoFamily,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                 )
                             },
                             singleLine = true,
                             shape = MaterialTheme.shapes.medium,
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = OctaCyan,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
                             ),
                             trailingIcon = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -199,7 +211,7 @@ fun FetchScreen(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Clear,
-                                                contentDescription = stringResource(R.string.action_clear_url),
+                                                contentDescription = "Clear",
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
@@ -215,7 +227,7 @@ fun FetchScreen(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.ContentPaste,
-                                            contentDescription = stringResource(R.string.action_paste_clipboard),
+                                            contentDescription = "Paste from clipboard",
                                             tint = OctaCyan
                                         )
                                     }
@@ -226,7 +238,7 @@ fun FetchScreen(
                                 .testTag("url_input_field")
                         )
 
-                        // Error Banner if extraction failed
+                        // Error Banner if extraction encounters an issue
                         AnimatedVisibility(visible = extractionState is ExtractionUiState.Error) {
                             val errMsg = (extractionState as? ExtractionUiState.Error)?.message ?: ""
                             Surface(
@@ -275,8 +287,10 @@ fun FetchScreen(
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = stringResource(R.string.action_resolving_streams),
-                                    style = MaterialTheme.typography.labelLarge
+                                    text = "Analyzing Manifest & Probing Streams...",
+                                    fontFamily = JetBrainsMonoFamily,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
                             } else {
                                 Icon(
@@ -286,8 +300,10 @@ fun FetchScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = stringResource(R.string.action_fetch_streams),
-                                    style = MaterialTheme.typography.labelLarge
+                                    text = "EXTRACT STREAM MANIFEST",
+                                    fontFamily = SpaceGroteskFamily,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
@@ -295,7 +311,7 @@ fun FetchScreen(
                 }
             }
 
-            // 3. Architecture Pipeline Telemetry Pills
+            // 2. Active Engine Metric Indicators
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -309,7 +325,7 @@ fun FetchScreen(
                     )
                     PipelineMetricCard(
                         title = "DASH Muxer",
-                        subtitle = "-c copy Zero-Encode",
+                        subtitle = "-c copy Hardware",
                         accent = OctaEmerald,
                         modifier = Modifier.weight(1f)
                     )
@@ -322,30 +338,61 @@ fun FetchScreen(
                 }
             }
 
-            // 4. Verified Benchmark & Open-Movie Multi-Stream Presets
+            // 3. Clean Empty-State Guidance Card
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "VERIFIED MULTI-THREAD & DASH TEST STREAMS",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "Tap any stream below to immediately test N-segment Range downloading or 1080p/4K DASH audio+video multiplexing.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
-                }
-            }
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                            MaterialTheme.shapes.medium
+                        )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(OctaCyan.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = OctaCyan,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
 
-            items(presets, key = { it.url }) { preset ->
-                PresetStreamCard(
-                    preset = preset,
-                    enabled = !isResolving,
-                    onSelect = {
-                        onFetchClicked(preset.url)
+                        Text(
+                            text = "Clean Parallel Transfer Ready",
+                            fontFamily = SpaceGroteskFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        Text(
+                            text = "Paste any media stream, HLS/DASH manifest, or video link above. OctaStream extracts available resolution streams, decodes formats, and coordinates high-speed parallel chunk downloads directly to your storage.",
+                            fontFamily = JetBrainsMonoFamily,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 16.sp
+                        )
                     }
-                )
+                }
             }
 
             item {
@@ -353,7 +400,7 @@ fun FetchScreen(
             }
         }
 
-        // 5. Quality Picker ModalBottomSheet when extraction completes
+        // 4. Quality Picker Bottom Sheet
         if (extractionState is ExtractionUiState.Success) {
             QualityPickerBottomSheet(
                 streamInfo = extractionState.streamInfo,
@@ -363,96 +410,6 @@ fun FetchScreen(
                     onStartDownload(extractionState.streamInfo, selectedOption)
                 }
             )
-        }
-    }
-}
-
-@Composable
-private fun HeroHeaderBanner(configuredThreads: Int) {
-    Card(
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(156.dp)
-            .border(
-                1.dp,
-                OctaCyan.copy(alpha = 0.35f),
-                MaterialTheme.shapes.large
-            )
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Image(
-                painter = painterResource(id = R.drawable.img_hero_banner_1790464806368),
-                contentDescription = "OctaStream Parallel Engine Banner",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(
-                                Color(0xEE0B0F19),
-                                Color(0xBB0B0F19),
-                                Color(0x660B0F19)
-                            )
-                        )
-                    )
-            )
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        color = OctaCyan.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = "IDM CORE ENGINE",
-                            fontFamily = JetBrainsMonoFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            color = OctaCyan,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                    Surface(
-                        color = OctaEmerald.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = "$configuredThreads PARALLEL CONNECTIONS",
-                            fontFamily = JetBrainsMonoFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            color = OctaEmerald,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                Column {
-                    Text(
-                        text = "OctaStream",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Direct signature decoding, multi-segment HTTP Range acceleration & zero-encode DASH multiplexing.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFD0DCF0),
-                        maxLines = 2
-                    )
-                }
-            }
         }
     }
 }
@@ -490,89 +447,6 @@ private fun PipelineMetricCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-        }
-    }
-}
-
-@Composable
-private fun PresetStreamCard(
-    preset: SampleStreamPreset,
-    enabled: Boolean,
-    onSelect: () -> Unit
-) {
-    Card(
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(enabled = enabled, onClick = onSelect)
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-                MaterialTheme.shapes.medium
-            )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(OctaCyan.copy(alpha = 0.14f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayCircleOutline,
-                        contentDescription = null,
-                        tint = OctaCyan,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = preset.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = preset.subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Surface(
-                color = OctaCobalt.copy(alpha = 0.22f),
-                shape = RoundedCornerShape(6.dp)
-            ) {
-                Text(
-                    text = preset.badge,
-                    fontFamily = JetBrainsMonoFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 10.sp,
-                    color = Color(0xFF9FB3FF),
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-            }
         }
     }
 }
