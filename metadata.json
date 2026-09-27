@@ -1,6 +1,0 @@
-{
-  "name": "octa",
-  "description": "High-performance media extraction and multi-threaded parallel segmented download utility with DASH muxing and live diagnostics.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
