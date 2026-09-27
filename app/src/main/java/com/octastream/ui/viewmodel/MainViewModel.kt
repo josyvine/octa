@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 enum class OctaTab {
+    LANDING,
     FETCH,
     DOWNLOADS,
     SETTINGS
@@ -122,7 +123,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun startDownload(streamInfo: StreamInfo, option: QualityOption) {
         downloadEngine.enqueueDownload(streamInfo, option)
         _extractionState.value = ExtractionUiState.Idle
-        // Automatically redirect user to Tab 2 (Download Manager) as required
+        // Automatically redirect user to Tab 2 (Download Manager / Queue)
         _selectedTab.value = OctaTab.DOWNLOADS
         _snackbarMessage.value = "Queued '${streamInfo.title}' (${option.resolution})"
     }
