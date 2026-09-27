@@ -444,7 +444,7 @@ class DownloadEngine private constructor(private val appContext: Context) {
                     url = audioUrl,
                     targetFile = audioTempFile,
                     initialSegment = seg,
-                    useRangeHeader = seg.endByte > 0L, // Request Range: bytes=0-end for Google Video audio
+                    useRangeHeader = seg.endByte > 0L,
                     userAgent = effectiveUa,
                     customHeaders = cleanHeaders,
                     onSegmentProgress = { index, downloaded, speedBps, completed ->
