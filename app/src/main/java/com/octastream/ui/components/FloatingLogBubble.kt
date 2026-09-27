@@ -1,5 +1,6 @@
 package com.octastream.ui.components
 
+import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -13,9 +14,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,12 +31,10 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,7 +43,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloseFullscreen
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -50,13 +51,9 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Badge
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,12 +75,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.OctaAmber
 import com.example.ui.theme.OctaCoralRed
@@ -97,12 +97,13 @@ import com.example.ui.theme.TerminalWarnYellow
 import com.octastream.logger.AppLogger
 import com.octastream.model.LogEntry
 import com.octastream.model.LogLevel
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
  * Global Floating Diagnostic Log Bubble & Fullscreen Terminal Overlay.
  * Tracks drag gestures across the entire root Box and expands into an edge-to-edge
- * #121212 syntax-highlighted diagnostic console on tap.
+ * #121212 syntax-highlighted console on tap.
  */
 @Composable
 fun FloatingLogBubbleOverlay(
@@ -213,8 +214,9 @@ fun FloatingLogBubbleOverlay(
                             Icons.Default.WarningAmber
                         } else {
                             Icons.Default.Terminal
-                        },
-                        contentDescription = "Open Diagnostic Terminal",
+                        }
+                        ,
+                        contentDescription = "Open Console",
                         tint = borderColor,
                         modifier = Modifier.size(24.dp)
                     )
@@ -247,7 +249,7 @@ fun FloatingLogBubbleOverlay(
             }
         }
 
-        // 2. Fullscreen Diagnostic Console Modal (#121212 dark terminal theme)
+        // 2. Fullscreen Console Modal (#121212 dark terminal theme)
         AnimatedVisibility(
             visible = isExpanded,
             enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.94f, animationSpec = tween(200)),
@@ -273,8 +275,17 @@ private fun FullscreenDiagnosticConsole(
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
+    val view = LocalView.current
     val listState = rememberLazyListState()
     var filterLevel by remember { mutableStateOf<LogLevel?>(null) }
+    var copiedAllFeedback by remember { mutableStateOf(false) }
+
+    LaunchedEffect(copiedAllFeedback) {
+        if (copiedAllFeedback) {
+            delay(1500)
+            copiedAllFeedback = false
+        }
+    }
 
     val filteredLogs = remember(logs, filterLevel) {
         if (filterLevel == null) logs else logs.filter { it.level == filterLevel }
@@ -284,6 +295,19 @@ private fun FullscreenDiagnosticConsole(
         if (filteredLogs.isNotEmpty()) {
             listState.animateScrollToItem(filteredLogs.lastIndex)
         }
+    }
+
+    val copyEntryToClipboard: (LogEntry) -> Unit = { entry ->
+        val formatted = buildString {
+            append("${entry.formattedTimestamp} [${entry.level.label}] ${entry.tag}: ${entry.message}")
+            if (!entry.stackTrace.isNullOrBlank()) {
+                append("\n")
+                append(entry.stackTrace)
+            }
+        }
+        clipboardManager.setText(AnnotatedString(formatted))
+        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        Toast.makeText(context, "Copied log entry", Toast.LENGTH_SHORT).show()
     }
 
     Surface(
@@ -297,89 +321,133 @@ private fun FullscreenDiagnosticConsole(
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing)
         ) {
-            // Terminal Top Bar
+            // Clean Console Header Bar: "Console" on left + Copy, Clear, Minimize icon buttons on right
             Surface(
                 color = TerminalHeaderSurface,
                 tonalElevation = 4.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.BugReport,
+                                imageVector = Icons.Default.Terminal,
                                 contentDescription = null,
-                                tint = TerminalInfoGreen,
-                                modifier = Modifier.size(22.dp)
+                                tint = OctaCyan,
+                                modifier = Modifier.size(20.dp)
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = "OCTASTREAM DIAGNOSTIC CONSOLE",
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = Color.White
-                                )
-                                Text(
-                                    text = "Ring Buffer: ${logs.size}/500 lines • Live Telemetry",
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 11.sp,
-                                    color = TerminalTextMuted
-                                )
-                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Console",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = Color.White
+                            )
                         }
 
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            FilledTonalButton(
+                            // 1. Visual Copy Icon Button (Icon Only)
+                            IconButton(
                                 onClick = {
-                                    val rawDump = AppLogger.exportFormattedLogs()
-                                    clipboardManager.setText(AnnotatedString(rawDump))
+                                    val textToCopy = if (filterLevel == null) {
+                                        AppLogger.exportFormattedLogs()
+                                    } else {
+                                        filteredLogs.joinToString("\n\n") { entry ->
+                                            buildString {
+                                                append("${entry.formattedTimestamp} [${entry.level.label}] ${entry.tag}: ${entry.message}")
+                                                if (!entry.stackTrace.isNullOrBlank()) {
+                                                    append("\n")
+                                                    append(entry.stackTrace)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    clipboardManager.setText(AnnotatedString(textToCopy))
+                                    copiedAllFeedback = true
                                     Toast.makeText(
                                         context,
-                                        "Copied ${logs.size} log entries to clipboard",
+                                        "Copied ${filteredLogs.size} log entries",
                                         Toast.LENGTH_SHORT
                                     ).show()
                                 },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = Color(0xFF263245),
-                                    contentColor = OctaCyan
-                                ),
-                                modifier = Modifier.testTag("copy_logs_button")
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFF1E293B))
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (copiedAllFeedback) TerminalInfoGreen else OctaCyan.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                                    .testTag("copy_logs_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "Copy to Clipboard",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Copy",
-                                    fontFamily = JetBrainsMonoFamily,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
+                                    imageVector = if (copiedAllFeedback) {
+                                        Icons.Default.Check
+                                    } else {
+                                        Icons.Default.ContentCopy
+                                    },
+                                    contentDescription = stringResource(R.string.action_copy_logs),
+                                    tint = if (copiedAllFeedback) TerminalInfoGreen else OctaCyan,
+                                    modifier = Modifier.size(19.dp)
                                 )
                             }
 
+                            // 2. Clear Log Buffer Icon Button (Icon Only)
+                            IconButton(
+                                onClick = {
+                                    onClearBuffer()
+                                    Toast.makeText(context, "Cleared log buffer", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFF2A1C20))
+                                    .border(
+                                        width = 1.dp,
+                                        color = TerminalErrorRed.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                                    .testTag("clear_log_buffer_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteSweep,
+                                    contentDescription = stringResource(R.string.action_clear_logs),
+                                    tint = TerminalErrorRed,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // 3. Minimize Console Icon Button (Google Material CloseFullscreen Icon)
                             IconButton(
                                 onClick = onMinimize,
                                 modifier = Modifier
+                                    .size(40.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(Color(0xFF2B3548))
+                                    .background(Color(0xFF242B38))
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color(0xFF3B4454),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
                                     .testTag("minimize_console_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.CloseFullscreen,
-                                    contentDescription = "Minimize Console",
-                                    tint = Color.White
+                                    contentDescription = stringResource(R.string.action_minimize_logs),
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
@@ -431,7 +499,7 @@ private fun FullscreenDiagnosticConsole(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "$ No diagnostic entries matching current filter_",
+                        text = "$ No logs_",
                         fontFamily = JetBrainsMonoFamily,
                         fontSize = 13.sp,
                         color = TerminalTextMuted
@@ -444,55 +512,13 @@ private fun FullscreenDiagnosticConsole(
                         .weight(1f)
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp),
-                    contentPadding = PaddingValues(vertical = 12.dp),
+                    contentPadding = PaddingValues(vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(filteredLogs, key = { it.id }) { entry ->
-                        TerminalLogRow(entry = entry)
-                    }
-                }
-            }
-
-            HorizontalDivider(color = Color(0xFF2A2F3A))
-
-            // Bottom Action Bar: Clear Log Buffer
-            Surface(
-                color = TerminalHeaderSurface,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "SYNTAX: GREEN=INFO/NET • YELLOW=WARN • RED=ERR",
-                        fontFamily = JetBrainsMonoFamily,
-                        fontSize = 10.sp,
-                        color = TerminalTextMuted,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    OutlinedButton(
-                        onClick = onClearBuffer,
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = TerminalErrorRed
-                        ),
-                        modifier = Modifier.testTag("clear_log_buffer_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.DeleteSweep,
-                            contentDescription = "Clear Log Buffer",
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Clear Log Buffer",
-                            fontFamily = JetBrainsMonoFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                        TerminalLogRow(
+                            entry = entry,
+                            onCopyEntry = { copyEntryToClipboard(entry) }
                         )
                     }
                 }
@@ -528,9 +554,22 @@ private fun TerminalFilterChip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TerminalLogRow(entry: LogEntry) {
+private fun TerminalLogRow(
+    entry: LogEntry,
+    onCopyEntry: () -> Unit
+) {
     var showStackTrace by remember { mutableStateOf(true) }
+    var copiedThisRow by remember { mutableStateOf(false) }
+
+    LaunchedEffect(copiedThisRow) {
+        if (copiedThisRow) {
+            delay(1400)
+            copiedThisRow = false
+        }
+    }
+
     val levelColor = when (entry.level) {
         LogLevel.ERROR -> TerminalErrorRed
         LogLevel.WARN -> TerminalWarnYellow
@@ -554,32 +593,71 @@ private fun TerminalLogRow(entry: LogEntry) {
                 },
                 shape = RoundedCornerShape(6.dp)
             )
+            .combinedClickable(
+                onClick = {
+                    if (!entry.stackTrace.isNullOrBlank()) {
+                        showStackTrace = !showStackTrace
+                    }
+                },
+                onLongClick = {
+                    copiedThisRow = true
+                    onCopyEntry()
+                }
+            )
             .padding(10.dp)
     ) {
         Row(
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = entry.formattedTimestamp,
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = 10.sp,
-                color = TerminalTextMuted
-            )
-            Text(
-                text = "[${entry.level.label}]",
-                fontFamily = JetBrainsMonoFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
-                color = levelColor
-            )
-            Text(
-                text = "${entry.tag}:",
-                fontFamily = JetBrainsMonoFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp,
-                color = OctaCyan
-            )
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = entry.formattedTimestamp,
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.sp,
+                    color = TerminalTextMuted
+                )
+                Text(
+                    text = "[${entry.level.label}]",
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    color = levelColor
+                )
+                Text(
+                    text = "${entry.tag}:",
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = OctaCyan
+                )
+            }
+
+            // Per-entry visual copy icon
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF222731))
+                    .clickable {
+                        copiedThisRow = true
+                        onCopyEntry()
+                    }
+                    .testTag("copy_log_entry_${entry.id}"),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (copiedThisRow) Icons.Default.Check else Icons.Default.ContentCopy,
+                    contentDescription = "Copy log entry",
+                    tint = if (copiedThisRow) TerminalInfoGreen else TerminalTextMuted,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(4.dp))
