@@ -119,10 +119,9 @@ class OkHttpNewPipeDownloader(
 
 /**
  * Core extraction pipeline powered by:
- * 1) Multi-Client Direct YouTube Innertube Engine (ANDROID_VR, IOS, ANDROID_TESTSUITE, ANDROID_CREATOR)
- *    to extract full high-resolution adaptiveFormats (4K / 1440p / 1080p / 720p / 480p / 360p + Audio)
- *    bypassing YouTube's HTML5/Web SABR 360p-only restriction.
- * 2) NewPipeExtractor (with stream merging so adaptive DASH tracks are never lost).
+ * 1) Multi-Client Direct YouTube Innertube Engine (IOS, ANDROID_VR, ANDROID_TESTSUITE, ANDROID_CREATOR)
+ *    to extract full high-resolution adaptiveFormats (4K / 1440p / 1080p / 720p / 480p / 360p + Audio).
+ * 2) NewPipeExtractor (with adaptive stream preservation).
  * 3) Piped / Invidious API fallback.
  * 4) Direct HTTP/2 Range & Content-Length Manifest Prober.
  */
@@ -131,12 +130,12 @@ object MediaExtractor {
     private const val TAG = "MediaExtractor"
     private val initialized = AtomicBoolean(false)
 
+    private const val UA_IOS =
+        "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iPhone OS 18_2_1 like Mac OS X;)"
     private const val UA_ANDROID_VR =
         "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
     private const val UA_ANDROID_VR_LEGACY =
         "com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 10; Quest 2 Build/QQ3A.200805.001) gzip"
-    private const val UA_IOS =
-        "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iPhone OS 18_2_1 like Mac OS X;)"
     private const val UA_ANDROID_TESTSUITE =
         "com.google.android.youtube/1.9 (Linux; U; Android 12; US) gzip"
     private const val UA_ANDROID_CREATOR =
@@ -150,7 +149,6 @@ object MediaExtractor {
 
     /**
      * Canonical YouTube itag -> nominal vertical resolution (p-rating) map.
-     * Ensures accurate resolution labels even on 9:16 vertical YouTube Shorts or 21:9 ultrawide videos.
      */
     private val ITAG_NOMINAL_HEIGHT = mapOf(
         18 to 360,
@@ -212,7 +210,6 @@ object MediaExtractor {
             .build()
     }
 
-    // Verified W3C & Mozilla MDN open media streams with guaranteed HTTP 200 / 206 Range support
     private const val OPEN_STREAM_SINTEL_HD = "https://media.w3.org/2010/05/sintel/trailer.mp4"
     private const val OPEN_STREAM_BUNNY_FULL = "https://media.w3.org/2010/05/bunny/movie.mp4"
     private const val OPEN_STREAM_BUNNY_TRAILER = "https://media.w3.org/2010/05/bunny/trailer.mp4"
@@ -246,14 +243,10 @@ object MediaExtractor {
         )
     )
 
-    /**
-     * Returns the exact User-Agent header required by the target media URL so that signed
-     * googlevideo.com URLs (which bind to the Innertube client `c=` parameter) never return HTTP 403.
-     */
     fun resolveUserAgentForUrl(url: String): String {
         return when {
-            url.contains("c=ANDROID_VR", ignoreCase = true) -> UA_ANDROID_VR
             url.contains("c=IOS", ignoreCase = true) -> UA_IOS
+            url.contains("c=ANDROID_VR", ignoreCase = true) -> UA_ANDROID_VR
             url.contains("c=ANDROID_TESTSUITE", ignoreCase = true) -> UA_ANDROID_TESTSUITE
             url.contains("c=ANDROID_CREATOR", ignoreCase = true) -> UA_ANDROID_CREATOR
             url.contains("c=TVHTML5", ignoreCase = true) -> UA_TV_EMBED
@@ -262,10 +255,6 @@ object MediaExtractor {
         }
     }
 
-    /**
-     * Extracts the `clen` (Content-Length) query parameter from signed media URLs (such as googlevideo.com)
-     * if present, avoiding unnecessary or rejected HEAD requests.
-     */
     fun extractContentLengthFromUrlParam(url: String): Long {
         val match = Regex("[?&]clen=(\\d+)").find(url)
         return match?.groupValues?.getOrNull(1)?.toLongOrNull() ?: -1L
@@ -304,10 +293,6 @@ object MediaExtractor {
             inputUrl
         }
 
-        // For YouTube / Shorts / youtu.be URLs:
-        // Run Direct Multi-Client Innertube Extraction (ANDROID_VR, IOS, ANDROID_TESTSUITE) FIRST
-        // and merge with NewPipeExtractor so we ALWAYS get full 1080p/1440p/4K/720p/480p DASH + Audio
-        // instead of getting stuck with NewPipe's SABR-limited 360p-only progressive stream.
         if (ytVideoId != null) {
             var bestInfo: StreamInfo? = extractYouTubeViaInnertubeClients(ytVideoId, inputUrl)
             val hasHighResDash = bestInfo?.qualityOptions?.any {
@@ -322,7 +307,6 @@ object MediaExtractor {
                 return@withContext Result.success(bestInfo)
             }
 
-            // Also run NewPipeExtractor and merge any streams it discovers
             val newPipeService = runCatching { NewPipe.getServiceByUrl(canonicalUrl) }.getOrNull()
             if (newPipeService != null) {
                 try {
@@ -337,7 +321,6 @@ object MediaExtractor {
                 }
             }
 
-            // If still missing high-res DASH streams, probe public Piped / Invidious instances and merge
             val stillMissingDash = bestInfo?.qualityOptions?.none {
                 it.category == StreamCategory.DASH_VIDEO
             } ?: true
@@ -369,7 +352,6 @@ object MediaExtractor {
             )
         }
 
-        // Non-YouTube URLs: Try NewPipeExtractor first, then Direct HTTP/2 Range probe
         val newPipeService = runCatching { NewPipe.getServiceByUrl(canonicalUrl) }.getOrNull()
         if (newPipeService != null) {
             AppLogger.info(
@@ -397,10 +379,6 @@ object MediaExtractor {
         return@withContext probeDirectMediaStream(inputUrl)
     }
 
-    /**
-     * Merges two StreamInfo results, preserving all unique DASH_VIDEO, PROGRESSIVE, and AUDIO_ONLY
-     * quality options sorted from highest resolution/bitrate to lowest.
-     */
     private fun mergeStreamInfos(primary: StreamInfo?, secondary: StreamInfo?): StreamInfo? {
         if (primary == null) return secondary
         if (secondary == null) return primary
@@ -422,9 +400,6 @@ object MediaExtractor {
         )
     }
 
-    /**
-     * Extracts 11-character YouTube video ID from standard watch URLs, /shorts/, /live/, /embed/, and youtu.be links.
-     */
     private fun extractYouTubeVideoId(url: String): String? {
         val patterns = listOf(
             Regex("(?:youtube\\.com/shorts/|youtube\\.com/live/|youtube\\.com/embed/|youtu\\.be/)([a-zA-Z0-9_-]{11})"),
@@ -454,16 +429,23 @@ object MediaExtractor {
         val isEmbeddedTv: Boolean = false
     )
 
-    /**
-     * Queries YouTube's `/youtubei/v1/player` directly across ANDROID_VR, IOS, ANDROID_TESTSUITE,
-     * ANDROID_CREATOR, and TVHTML5 clients, merging discovered streams so we always get full
-     * 4K / 1440p / 1080p / 720p / 480p / 360p DASH & Progressive options.
-     */
     private fun extractYouTubeViaInnertubeClients(
         videoId: String,
         sourceUrl: String
     ): StreamInfo? {
+        // Prioritize iOS client profile to eliminate bot challenges and extract true DASH formats
         val profiles = listOf(
+            InnertubeClientProfile(
+                name = "IOS (iPhone 16 Pro)",
+                clientName = "IOS",
+                clientVersion = "20.03.02",
+                userAgent = UA_IOS,
+                clientIdHeader = "5",
+                deviceMake = "Apple",
+                deviceModel = "iPhone16,2",
+                osName = "iPhone",
+                osVersion = "18.2.1.22C161"
+            ),
             InnertubeClientProfile(
                 name = "ANDROID_VR (Quest 3)",
                 clientName = "ANDROID_VR",
@@ -475,17 +457,6 @@ object MediaExtractor {
                 osName = "Android",
                 osVersion = "12L",
                 androidSdkVersion = 32
-            ),
-            InnertubeClientProfile(
-                name = "IOS (iPhone 16 Pro)",
-                clientName = "IOS",
-                clientVersion = "20.03.02",
-                userAgent = UA_IOS,
-                clientIdHeader = "5",
-                deviceMake = "Apple",
-                deviceModel = "iPhone16,2",
-                osName = "iPhone",
-                osVersion = "18.2.1.22C161"
             ),
             InnertubeClientProfile(
                 name = "ANDROID_VR (Quest 2)",
@@ -543,7 +514,6 @@ object MediaExtractor {
                     return mergedInfo
                 }
             } else {
-                // Retry with fresh visitorData token if anonymous call was rate-limited or challenged
                 if (cachedVisitorData == null) {
                     cachedVisitorData = fetchYouTubeVisitorData() ?: ""
                 }
@@ -650,7 +620,7 @@ object MediaExtractor {
                 )
 
                 if (status == "OK") {
-                    val parsed = parseInnertubePlayerResponse(sourceUrl, videoId, profile.name, root)
+                    val parsed = parseInnertubePlayerResponse(sourceUrl, videoId, profile, root)
                     if (parsed != null && parsed.qualityOptions.isNotEmpty()) {
                         val dashCount = parsed.qualityOptions.count { it.category == StreamCategory.DASH_VIDEO }
                         AppLogger.info(
@@ -669,7 +639,6 @@ object MediaExtractor {
     }
 
     private fun fetchYouTubeVisitorData(): String? {
-        // 1. Try official /youtubei/v1/visitor_id endpoint first
         try {
             val payload = JSONObject().put(
                 "context",
@@ -699,10 +668,9 @@ object MediaExtractor {
                 }
             }
         } catch (_: Exception) {
-            // Fall through to sw.js_data
+            // Fallback
         }
 
-        // 2. Fallback to sw.js_data
         return try {
             val req = Request.Builder()
                 .url("https://www.youtube.com/sw.js_data")
@@ -721,7 +689,7 @@ object MediaExtractor {
     private fun parseInnertubePlayerResponse(
         sourceUrl: String,
         videoId: String,
-        clientLabel: String,
+        profile: InnertubeClientProfile,
         root: JSONObject
     ): StreamInfo? {
         val videoDetails = root.optJSONObject("videoDetails")
@@ -743,6 +711,12 @@ object MediaExtractor {
 
         val formatsJson = streamingData.optJSONArray("formats") ?: JSONArray()
         val adaptiveJson = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
+
+        val boundHeaders = mapOf(
+            "User-Agent" to profile.userAgent,
+            "X-YouTube-Client-Name" to profile.clientIdHeader,
+            "X-YouTube-Client-Version" to profile.clientVersion
+        )
 
         data class RawTrack(
             val itag: Int,
@@ -785,7 +759,6 @@ object MediaExtractor {
                 }
                 if (directUrl.isBlank()) continue
 
-                // Skip live/OTF manifest template URLs that are not byte-range addressable
                 val streamType = obj.optString("type", "")
                 if (streamType.contains("FORMAT_STREAM_TYPE_OTF", ignoreCase = true)) continue
 
@@ -830,7 +803,6 @@ object MediaExtractor {
             .filter { it.mimeType.startsWith("audio/") }
             .sortedByDescending { it.bitrate }
 
-        // Separate best M4A (AAC) audio for MP4 muxing and best WebM (Opus/Vorbis) audio for WebM 4K/2K muxing
         val bestM4aAudio = audioTracks.firstOrNull { it.mimeType.contains("mp4", ignoreCase = true) }
             ?: audioTracks.firstOrNull()
         val bestWebmAudio = audioTracks.firstOrNull { it.mimeType.contains("webm", ignoreCase = true) }
@@ -838,9 +810,7 @@ object MediaExtractor {
 
         val options = mutableListOf<QualityOption>()
 
-        // 1. Separated DASH formats (4K 2160p, 1440p QHD, 1080p Full HD, 720p HD, 480p SD, 360p, 240p)
-        // Prioritize H.264 (avc1) & HEVC (hvc1/hev1) MP4 tracks for universal hardware muxing,
-        // while also supporting VP9/AV1 for 1440p QHD & 2160p 4K.
+        // 1. DASH Video Tracks
         val dashVideoTracks = adaptiveTracks
             .filter { it.mimeType.startsWith("video/") && it.nominalHeight >= 144 }
             .sortedWith(
@@ -902,12 +872,14 @@ object MediaExtractor {
                     audioUrl = pairedAudio.url,
                     estimatedSizeBytes = totalEstBytes,
                     isDashMuxRequired = true,
-                    bitrateKbps = ((vTrack.bitrate + pairedAudio.bitrate) / 1000).coerceAtLeast(800)
+                    bitrateKbps = ((vTrack.bitrate + pairedAudio.bitrate) / 1000).coerceAtLeast(800),
+                    userAgent = profile.userAgent,
+                    customHeaders = boundHeaders
                 )
             )
         }
 
-        // 2. Progressive (Combined Video + Audio) formats (e.g. 360p, 720p)
+        // 2. Progressive formats
         progressiveTracks
             .filter { it.mimeType.startsWith("video/") }
             .sortedByDescending { it.nominalHeight }
@@ -936,12 +908,14 @@ object MediaExtractor {
                         audioUrl = null,
                         estimatedSizeBytes = estBytes,
                         isDashMuxRequired = false,
-                        bitrateKbps = (track.bitrate / 1000).coerceAtLeast(500)
+                        bitrateKbps = (track.bitrate / 1000).coerceAtLeast(500),
+                        userAgent = profile.userAgent,
+                        customHeaders = boundHeaders
                     )
                 )
             }
 
-        // 3. Audio-only streams (M4A / WebM)
+        // 3. Audio-only formats
         audioTracks
             .distinctBy { "${it.mimeType}_${it.bitrate / 10000}" }
             .take(4)
@@ -965,7 +939,9 @@ object MediaExtractor {
                         audioUrl = aTrack.url,
                         estimatedSizeBytes = estBytes,
                         isDashMuxRequired = false,
-                        bitrateKbps = kbps
+                        bitrateKbps = kbps,
+                        userAgent = profile.userAgent,
+                        customHeaders = boundHeaders
                     )
                 )
             }
@@ -978,14 +954,11 @@ object MediaExtractor {
             uploaderName = author,
             durationSeconds = durationSec,
             thumbnailUrl = bestThumb,
-            serviceName = "YouTube ($clientLabel)",
+            serviceName = "YouTube (${profile.name})",
             qualityOptions = options
         )
     }
 
-    /**
-     * Stage 3 Fallback: Queries public Piped & Invidious API instances if direct Innertube is restricted.
-     */
     private fun extractYouTubeViaPipedInstances(
         videoId: String,
         sourceUrl: String
@@ -1057,7 +1030,9 @@ object MediaExtractor {
                                     audioUrl = null,
                                     estimatedSizeBytes = estimateSizeFromBitrate(bitrate, duration),
                                     isDashMuxRequired = false,
-                                    bitrateKbps = bitrate / 1000
+                                    bitrateKbps = bitrate / 1000,
+                                    userAgent = UA_DEFAULT_BROWSER,
+                                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                                 )
                             )
                         } else if (bestAudioUrl != null && format.contains("MPEG_4", true)) {
@@ -1072,7 +1047,9 @@ object MediaExtractor {
                                     audioUrl = bestAudioUrl,
                                     estimatedSizeBytes = estimateSizeFromBitrate(bitrate + bestAudioBitrate, duration),
                                     isDashMuxRequired = true,
-                                    bitrateKbps = (bitrate + bestAudioBitrate) / 1000
+                                    bitrateKbps = (bitrate + bestAudioBitrate) / 1000,
+                                    userAgent = UA_DEFAULT_BROWSER,
+                                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                                 )
                             )
                         }
@@ -1090,7 +1067,9 @@ object MediaExtractor {
                                 audioUrl = bestAudioUrl,
                                 estimatedSizeBytes = estimateSizeFromBitrate(bestAudioBitrate, duration),
                                 isDashMuxRequired = false,
-                                bitrateKbps = bestAudioBitrate / 1000
+                                bitrateKbps = bestAudioBitrate / 1000,
+                                userAgent = UA_DEFAULT_BROWSER,
+                                customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                             )
                         )
                     }
@@ -1108,7 +1087,7 @@ object MediaExtractor {
                     }
                 }
             } catch (_: Exception) {
-                // Continue to next instance
+                // Continue
             }
         }
         return null
@@ -1129,7 +1108,6 @@ object MediaExtractor {
             it.format?.suffix?.equals("webm", ignoreCase = true) == true
         } ?: bestM4aAudio
 
-        // A. Separated DASH high-res video streams paired with best audio
         npInfo.videoOnlyStreams
             .filter { it.isUrl && !it.content.isNullOrBlank() }
             .map { vos ->
@@ -1173,6 +1151,7 @@ object MediaExtractor {
                     } else {
                         estimateSizeFromBitrate(totalBitrate, npInfo.duration)
                     }
+                    val ua = resolveUserAgentForUrl(vos.content)
                     options.add(
                         QualityOption(
                             label = "$qLabel $tierTag DASH (Video + ${audioKbps}k Audio)",
@@ -1184,13 +1163,14 @@ object MediaExtractor {
                             audioUrl = pairedAudio.content,
                             estimatedSizeBytes = combinedLen,
                             isDashMuxRequired = true,
-                            bitrateKbps = totalBitrate / 1000
+                            bitrateKbps = totalBitrate / 1000,
+                            userAgent = ua,
+                            customHeaders = mapOf("User-Agent" to ua)
                         )
                     )
                 }
             }
 
-        // B. Progressive (combined video + audio) streams (e.g., 360p, 720p)
         npInfo.videoStreams
             .filter { it.isUrl && !it.content.isNullOrBlank() }
             .sortedByDescending {
@@ -1204,6 +1184,7 @@ object MediaExtractor {
                 val nomHeight = resolveNominalHeight(vs.itag, vs.width, vs.height, vs.resolution)
                 val res = resolveCanonicalQualityLabel(nomHeight, vs.fps, vs.resolution)
                 val clen = extractContentLengthFromUrlParam(vs.content)
+                val ua = resolveUserAgentForUrl(vs.content)
                 options.add(
                     QualityOption(
                         label = "$res Progressive ($suffix)",
@@ -1215,12 +1196,13 @@ object MediaExtractor {
                         audioUrl = null,
                         estimatedSizeBytes = if (clen > 0L) clen else estimateSizeFromBitrate(vs.bitrate, npInfo.duration),
                         isDashMuxRequired = false,
-                        bitrateKbps = if (vs.bitrate > 0) vs.bitrate / 1000 else 1500
+                        bitrateKbps = if (vs.bitrate > 0) vs.bitrate / 1000 else 1500,
+                        userAgent = ua,
+                        customHeaders = mapOf("User-Agent" to ua)
                     )
                 )
             }
 
-        // C. Audio-only streams (M4A / WebM)
         sortedAudios
             .distinctBy { "${it.format?.suffix}_${it.averageBitrate}" }
             .take(4)
@@ -1228,6 +1210,7 @@ object MediaExtractor {
                 val suffix = (audio.format?.suffix ?: "m4a").uppercase()
                 val kbps = if (audio.averageBitrate > 0) audio.averageBitrate else 128
                 val aLen = extractContentLengthFromUrlParam(audio.content)
+                val ua = resolveUserAgentForUrl(audio.content)
                 options.add(
                     QualityOption(
                         label = "${kbps}kbps High-Fidelity Audio ($suffix)",
@@ -1239,7 +1222,9 @@ object MediaExtractor {
                         audioUrl = audio.content,
                         estimatedSizeBytes = if (aLen > 0L) aLen else estimateSizeFromBitrate(kbps * 1000, npInfo.duration),
                         isDashMuxRequired = false,
-                        bitrateKbps = kbps
+                        bitrateKbps = kbps,
+                        userAgent = ua,
+                        customHeaders = mapOf("User-Agent" to ua)
                     )
                 )
             }
@@ -1342,7 +1327,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_BUNNY_TRAILER,
                     estimatedSizeBytes = resolvedSize + companionAudioSize,
                     isDashMuxRequired = true,
-                    bitrateKbps = 14000
+                    bitrateKbps = 14000,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 ),
                 QualityOption(
                     label = "1440p 2K QHD DASH (Video + 192k Audio Mux)",
@@ -1354,7 +1341,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_MOVIE_COMPACT,
                     estimatedSizeBytes = resolvedSize + 1_756_185L,
                     isDashMuxRequired = true,
-                    bitrateKbps = 7800
+                    bitrateKbps = 7800,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 ),
                 QualityOption(
                     label = "1080p Full HD DASH (Video + 160k Audio Mux)",
@@ -1366,7 +1355,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_BUNNY_TRAILER,
                     estimatedSizeBytes = resolvedSize + companionAudioSize,
                     isDashMuxRequired = true,
-                    bitrateKbps = 4500
+                    bitrateKbps = 4500,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 ),
                 QualityOption(
                     label = "720p HD Progressive (Direct Stream)",
@@ -1378,7 +1369,9 @@ object MediaExtractor {
                     audioUrl = null,
                     estimatedSizeBytes = resolvedSize,
                     isDashMuxRequired = false,
-                    bitrateKbps = 2200
+                    bitrateKbps = 2200,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 ),
                 QualityOption(
                     label = "360p SD Progressive (Fast Stream)",
@@ -1390,7 +1383,9 @@ object MediaExtractor {
                     audioUrl = null,
                     estimatedSizeBytes = 1_756_185L,
                     isDashMuxRequired = false,
-                    bitrateKbps = 800
+                    bitrateKbps = 800,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 ),
                 QualityOption(
                     label = "160kbps AAC Audio Track (M4A)",
@@ -1402,7 +1397,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_BUNNY_TRAILER,
                     estimatedSizeBytes = companionAudioSize,
                     isDashMuxRequired = false,
-                    bitrateKbps = 160
+                    bitrateKbps = 160,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 ),
                 QualityOption(
                     label = "192kbps Master Audio (WebM)",
@@ -1414,7 +1411,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_MOVIE_COMPACT,
                     estimatedSizeBytes = 1_756_185L,
                     isDashMuxRequired = false,
-                    bitrateKbps = 192
+                    bitrateKbps = 192,
+                    userAgent = userAgent,
+                    customHeaders = mapOf("User-Agent" to userAgent)
                 )
             )
 
@@ -1462,7 +1461,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_BUNNY_TRAILER,
                     estimatedSizeBytes = 6_339_045L,
                     isDashMuxRequired = true,
-                    bitrateKbps = 14500
+                    bitrateKbps = 14500,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 ),
                 QualityOption(
                     label = "1440p 2K QHD DASH (Separated Video + Audio)",
@@ -1474,7 +1475,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_MOVIE_COMPACT,
                     estimatedSizeBytes = 6_258_279L,
                     isDashMuxRequired = true,
-                    bitrateKbps = 8200
+                    bitrateKbps = 8200,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 ),
                 QualityOption(
                     label = "1080p Full HD DASH (Separated Video + Audio)",
@@ -1486,7 +1489,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_BUNNY_TRAILER,
                     estimatedSizeBytes = 6_339_045L,
                     isDashMuxRequired = true,
-                    bitrateKbps = 4500
+                    bitrateKbps = 4500,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 ),
                 QualityOption(
                     label = "720p HD Progressive (MP4)",
@@ -1498,7 +1503,9 @@ object MediaExtractor {
                     audioUrl = null,
                     estimatedSizeBytes = 4_372_396L,
                     isDashMuxRequired = false,
-                    bitrateKbps = 2100
+                    bitrateKbps = 2100,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 ),
                 QualityOption(
                     label = "360p SD Progressive (Fast Stream)",
@@ -1510,7 +1517,9 @@ object MediaExtractor {
                     audioUrl = null,
                     estimatedSizeBytes = 1_756_185L,
                     isDashMuxRequired = false,
-                    bitrateKbps = 800
+                    bitrateKbps = 800,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 ),
                 QualityOption(
                     label = "160kbps High-Bitrate Audio (M4A)",
@@ -1522,7 +1531,9 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_BUNNY_TRAILER,
                     estimatedSizeBytes = 1_966_649L,
                     isDashMuxRequired = false,
-                    bitrateKbps = 160
+                    bitrateKbps = 160,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 ),
                 QualityOption(
                     label = "192kbps Audio Track (WebM)",
@@ -1534,16 +1545,14 @@ object MediaExtractor {
                     audioUrl = OPEN_STREAM_MOVIE_COMPACT,
                     estimatedSizeBytes = 1_756_185L,
                     isDashMuxRequired = false,
-                    bitrateKbps = 192
+                    bitrateKbps = 192,
+                    userAgent = UA_DEFAULT_BROWSER,
+                    customHeaders = mapOf("User-Agent" to UA_DEFAULT_BROWSER)
                 )
             )
         )
     }
 
-    /**
-     * Resolves the canonical p-rating (144, 240, 360, 480, 720, 1080, 1440, 2160) for any stream,
-     * handling both 16:9 horizontal videos (1920x1080) and 9:16 vertical YouTube Shorts (1080x1920).
-     */
     private fun resolveNominalHeight(
         itag: Int,
         width: Int,
