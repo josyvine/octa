@@ -1,7 +1,10 @@
 package com.octastream.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -12,21 +15,31 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -49,18 +62,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
 import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.OctaAmber
 import com.example.ui.theme.OctaCyan
 import com.example.ui.theme.OctaEmerald
+import com.example.ui.theme.SpaceGroteskFamily
 import com.octastream.data.StorageHelper
 import com.octastream.model.DownloadState
 import com.octastream.ui.components.FloatingLogBubbleOverlay
@@ -95,9 +114,13 @@ fun RootScaffold(
         }
     }
 
-    // BackHandler on secondary tabs returns to Fetch (Home) screen
-    BackHandler(enabled = selectedTab != OctaTab.FETCH) {
-        viewModel.selectTab(OctaTab.FETCH)
+    // Step-wise Back Navigation: Secondary tabs -> FETCH -> LANDING
+    BackHandler(enabled = selectedTab != OctaTab.LANDING) {
+        if (selectedTab == OctaTab.FETCH) {
+            viewModel.selectTab(OctaTab.LANDING)
+        } else {
+            viewModel.selectTab(OctaTab.FETCH)
+        }
     }
 
     val activeTaskCount = tasks.count {
@@ -108,7 +131,7 @@ fun RootScaffold(
     }
     val liveSpeedBps = tasks.sumOf { it.speedBytesPerSec }
 
-    // Root Box overlay containing the Scaffold + Global Draggable Floating Diagnostic Bubble
+    // Root Box overlay containing Scaffold + Draggable Log Console Bubble
     Box(modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isExpandedScreen = maxWidth >= 720.dp
@@ -125,7 +148,11 @@ fun RootScaffold(
                         title = {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.selectTab(OctaTab.LANDING) }
+                                    .padding(vertical = 4.dp, horizontal = 4.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -136,7 +163,7 @@ fun RootScaffold(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Hub,
-                                        contentDescription = null,
+                                        contentDescription = "Landing",
                                         tint = OctaCyan,
                                         modifier = Modifier.size(20.dp)
                                     )
@@ -225,11 +252,15 @@ fun RootScaffold(
 
                     Box(modifier = Modifier.weight(1f)) {
                         when (selectedTab) {
+                            OctaTab.LANDING -> LandingScreen(
+                                configuredThreads = settings.threadCount,
+                                onLaunchExtractor = { viewModel.selectTab(OctaTab.FETCH) }
+                            )
+
                             OctaTab.FETCH -> FetchScreen(
                                 urlInput = urlInput,
                                 extractionState = extractionState,
                                 configuredThreads = settings.threadCount,
-                                presets = viewModel.presets,
                                 onUrlChanged = viewModel::onUrlInputChanged,
                                 onClearUrl = viewModel::clearUrlInput,
                                 onFetchClicked = viewModel::fetchStreamManifest,
@@ -261,7 +292,7 @@ fun RootScaffold(
             }
         }
 
-        // Global Floating Diagnostic Log Bubble & Fullscreen Terminal Overlay
+        // Global Floating Diagnostic Log Bubble & Terminal Console Overlay
         FloatingLogBubbleOverlay(
             logs = logs,
             unreadAlertCount = unreadAlertCount,
@@ -269,6 +300,227 @@ fun RootScaffold(
             onMarkAlertsRead = viewModel::markDiagnosticAlertsRead,
             onClearLogs = viewModel::clearDiagnosticLogs
         )
+    }
+}
+
+@Composable
+private fun LandingScreen(
+    configuredThreads: Int,
+    onLaunchExtractor: () -> Unit
+) {
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Hero Image Card
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .border(1.dp, OctaCyan.copy(alpha = 0.35f), RoundedCornerShape(16.dp)),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Image(
+                    painter = painterResource(id = R.drawable.img_hero_banner_1790464806368),
+                    contentDescription = "OctaStream Hero",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp),
+                    contentScale = ContentScale.Crop
+                )
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color(0xCC0A0E14),
+                                    Color(0xF00A0E14)
+                                )
+                            )
+                        )
+                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            color = OctaCyan.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "IDM CORE ENGINE",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                color = OctaCyan,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        Surface(
+                            color = OctaEmerald.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "$configuredThreads PARALLEL CONNECTIONS",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                color = OctaEmerald,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "OctaStream",
+                        fontFamily = SpaceGroteskFamily,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+
+                    Text(
+                        text = "Direct stream decoding, multi-segment HTTP Range acceleration & hardware lossless DASH multiplexing.",
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 11.sp,
+                        color = Color(0xFFB0BEC5),
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+        }
+
+        // Action CTA Button
+        Button(
+            onClick = onLaunchExtractor,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = OctaCyan)
+        ) {
+            Icon(
+                imageVector = Icons.Default.PlayArrow,
+                contentDescription = null,
+                tint = Color(0xFF002227)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "OPEN STREAM EXTRACTOR",
+                fontFamily = SpaceGroteskFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = Color(0xFF002227)
+            )
+        }
+
+        // Architecture Features Overview
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "CORE CAPABILITIES",
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = OctaCyan,
+                letterSpacing = 1.sp
+            )
+
+            FeatureCard(
+                icon = Icons.Default.Speed,
+                title = "N-Way HTTP Range Slicing",
+                subtitle = "Concurrently pulls segmented byte ranges through dynamic thread pools with RandomAccess true resume support.",
+                accentColor = OctaCyan
+            )
+
+            FeatureCard(
+                icon = Icons.Default.Transform,
+                title = "Lossless Hardware DASH Muxer",
+                subtitle = "Synchronously multiplexes isolated video and audio streams at hardware level with zero re-encoding.",
+                accentColor = OctaEmerald
+            )
+
+            FeatureCard(
+                icon = Icons.Default.Security,
+                title = "Client Identity Preservation",
+                subtitle = "Binds User-Agents and query range fallback parameters to bypass HTTP 403 Forbidden errors.",
+                accentColor = OctaAmber
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun FeatureCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    accentColor: Color
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = title,
+                    fontFamily = SpaceGroteskFamily,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 15.sp
+                )
+            }
+        }
     }
 }
 
@@ -284,11 +536,11 @@ private fun OctaBottomNavigationBar(
         tonalElevation = 6.dp
     ) {
         NavigationBarItem(
-            selected = selectedTab == OctaTab.FETCH,
+            selected = selectedTab == OctaTab.FETCH || selectedTab == OctaTab.LANDING,
             onClick = { onSelectTab(OctaTab.FETCH) },
             icon = {
                 Icon(
-                    imageVector = if (selectedTab == OctaTab.FETCH) Icons.Filled.Bolt else Icons.Outlined.Bolt,
+                    imageVector = if (selectedTab == OctaTab.FETCH || selectedTab == OctaTab.LANDING) Icons.Filled.Bolt else Icons.Outlined.Bolt,
                     contentDescription = stringResource(R.string.tab_extract)
                 )
             },
@@ -378,11 +630,11 @@ private fun OctaSideNavigationRail(
     ) {
         Spacer(modifier = Modifier.weight(1f))
         NavigationRailItem(
-            selected = selectedTab == OctaTab.FETCH,
+            selected = selectedTab == OctaTab.FETCH || selectedTab == OctaTab.LANDING,
             onClick = { onSelectTab(OctaTab.FETCH) },
             icon = {
                 Icon(
-                    imageVector = if (selectedTab == OctaTab.FETCH) Icons.Filled.Bolt else Icons.Outlined.Bolt,
+                    imageVector = if (selectedTab == OctaTab.FETCH || selectedTab == OctaTab.LANDING) Icons.Filled.Bolt else Icons.Outlined.Bolt,
                     contentDescription = stringResource(R.string.tab_extract)
                 )
             },
